@@ -12,6 +12,7 @@
   [![Dart](https://img.shields.io/badge/Dart-3.12-0175C2?logo=dart&logoColor=white)](https://dart.dev/)
   [![Android](https://img.shields.io/badge/Android-API_23+-3DDC84?logo=android&logoColor=white)](https://developer.android.com/)
   [![CI](https://github.com/whym1ss/eatontime/actions/workflows/flutter.yml/badge.svg)](https://github.com/whym1ss/eatontime/actions/workflows/flutter.yml)
+  [![Release](https://img.shields.io/github/v/release/whym1ss/eatontime?display_name=tag&sort=semver)](https://github.com/whym1ss/eatontime/releases/latest)
   ![Offline first](https://img.shields.io/badge/offline--first-ready-2E7D32)
 
   [Возможности](#-возможности) · [Быстрый старт](#-быстрый-старт) ·
@@ -19,6 +20,13 @@
 </div>
 
 ---
+
+## 📥 Скачать
+
+Готовый APK для Android доступен на странице
+**[последнего релиза](https://github.com/whym1ss/eatontime/releases/latest)**.
+Для установки APK не из Google Play может потребоваться разрешить установку из
+выбранного браузера или файлового менеджера.
 
 ## Зачем это приложение
 
@@ -265,6 +273,8 @@ GitHub Actions выполняет генерацию моделей, стати�
 Предложения и сообщения об ошибках можно создавать через
 [GitHub Issues](https://github.com/whym1ss/eatontime/issues). Перед pull request
 запустите форматирование, анализатор и тесты.
+
+История пользовательских изменений: [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
