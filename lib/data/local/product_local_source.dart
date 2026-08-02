@@ -81,6 +81,40 @@ class ProductLocalSource {
         .findAll();
   }
 
+  /// Ограниченная выборка кандидатов для почасовой проверки уведомлений.
+  ///
+  /// Финальное решение принимает чистая политика в BackgroundService: срок
+  /// трактуется как конец указанного дня. Здесь намеренно берётся небольшой
+  /// запас по верхней границе, но очень старая просрочка не загружается.
+  Future<List<ProductEntity>> getExpiryNotificationCandidates(
+    String userId, {
+    required DateTime now,
+    required int notifyHoursBefore,
+    required int maxExpiredAgeDays,
+  }) {
+    final today = DateTime(now.year, now.month, now.day);
+    final tomorrow = today.add(const Duration(days: 1));
+    final horizon = now.add(Duration(hours: notifyHoursBefore));
+    final upper = horizon.isAfter(tomorrow) ? horizon : tomorrow;
+    final lower = today.subtract(Duration(days: maxExpiredAgeDays + 1));
+
+    return _active(userId)
+        .not()
+        .group((q) => q
+            .statusEqualTo(AppConstants.statusConsumed)
+            .or()
+            .statusEqualTo(AppConstants.statusWasted))
+        .and()
+        .expiryDateBetween(
+          lower,
+          upper,
+          includeLower: false,
+          includeUpper: true,
+        )
+        .sortByExpiryDate()
+        .findAll();
+  }
+
   Future<List<ProductEntity>> getDirty(String userId) =>
       _col.filter().userIdEqualTo(userId).isDirtyEqualTo(true).findAll();
 

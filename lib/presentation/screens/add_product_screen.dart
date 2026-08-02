@@ -26,9 +26,12 @@ class AddProductScreen extends ConsumerStatefulWidget {
     this.initialZoneId,
     this.initialQuantity,
     this.initialUnit,
+    this.initialPrice,
+    this.initialNote,
     this.initialSource,
     this.initialConfidence,
     this.initialOpeningDays,
+    this.initialOpened = false,
     this.recallWarnings = const [],
     this.addMethod = AppConstants.addManual,
     this.editing,
@@ -42,9 +45,12 @@ class AddProductScreen extends ConsumerStatefulWidget {
   final String? initialZoneId;
   final int? initialQuantity;
   final String? initialUnit;
+  final double? initialPrice;
+  final String? initialNote;
   final ProductDataSource? initialSource;
   final double? initialConfidence;
   final int? initialOpeningDays;
+  final bool initialOpened;
   final List<String> recallWarnings;
   final String addMethod;
   final Product? editing;
@@ -60,9 +66,12 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
   late final TextEditingController _priceController;
   late final TextEditingController _noteController;
   late final TextEditingController _quantityController;
+  late final TextEditingController _customCategoryController;
+  late final TextEditingController _openingDaysController;
 
   late String _zoneId;
   late DateTime _expiryDate;
+  late DateTime _sealedExpiryDate;
   String? _category;
   String _unit = 'pcs';
   bool _saving = false;
@@ -85,9 +94,12 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
       text: editing?.brand ?? widget.initialBrand ?? '',
     );
     _priceController = TextEditingController(
-      text: editing?.price?.toStringAsFixed(2) ?? '',
+      text: editing?.price?.toStringAsFixed(2) ??
+          widget.initialPrice?.toStringAsFixed(2) ??
+          '',
     );
-    _noteController = TextEditingController(text: editing?.note ?? '');
+    _noteController =
+        TextEditingController(text: editing?.note ?? widget.initialNote ?? '');
     _quantityController = TextEditingController(
       text: '${editing?.quantity ?? widget.initialQuantity ?? 1}',
     );
@@ -95,6 +107,13 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
     _zoneId =
         editing?.zoneId ?? widget.initialZoneId ?? AppConstants.zoneFridge;
     _category = editing?.category ?? widget.initialCategory;
+    _customCategoryController = TextEditingController(
+      text: _category != null &&
+              !ProductLabels.categories.containsKey(_category) &&
+              _category != 'other'
+          ? _category
+          : '',
+    );
     _categoryTouched =
         editing?.category != null || widget.initialCategory != null;
     _unit = editing?.unit ?? widget.initialUnit ?? 'pcs';
@@ -102,14 +121,19 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
         widget.initialExpiry ??
         DateTime.now().add(const Duration(days: 7));
     _expiryTouched = editing != null || widget.initialExpiry != null;
-    _openedDate = editing?.openedDate;
+    _openedDate =
+        editing?.openedDate ?? (widget.initialOpened ? DateTime.now() : null);
     _openingDays = widget.initialOpeningDays ??
+        editing?.afterOpeningStorageDays ??
         ProductMatcher.estimateAfterOpening(_category ?? 'other');
+    _openingDaysController = TextEditingController(text: '$_openingDays');
 
     if (!_expiryTouched && _category != null) {
       final days = ProductMatcher.estimateShelfLife(_category!, _zoneId);
       _expiryDate = DateTime.now().add(Duration(days: days));
     }
+    _sealedExpiryDate = _expiryDate;
+    _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
 
     if (editing == null &&
         _category == null &&
@@ -135,6 +159,8 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
     _priceController.dispose();
     _noteController.dispose();
     _quantityController.dispose();
+    _customCategoryController.dispose();
+    _openingDaysController.dispose();
     super.dispose();
   }
 
@@ -154,7 +180,8 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
           _category ?? match.category,
           _zoneId,
         );
-        _expiryDate = DateTime.now().add(Duration(days: days));
+        _sealedExpiryDate = DateTime.now().add(Duration(days: days));
+        _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
       }
     });
   }
@@ -164,7 +191,8 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
       _zoneId = zone;
       if (!_expiryTouched && _category != null) {
         final days = ProductMatcher.estimateShelfLife(_category!, zone);
-        _expiryDate = DateTime.now().add(Duration(days: days));
+        _sealedExpiryDate = DateTime.now().add(Duration(days: days));
+        _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
       }
     });
   }
@@ -172,14 +200,15 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
-      initialDate: _expiryDate,
+      initialDate: _sealedExpiryDate,
       firstDate: DateTime.now().subtract(const Duration(days: 365)),
       lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
       helpText: 'Годен до',
     );
     if (picked != null) {
       setState(() {
-        _expiryDate = picked;
+        _sealedExpiryDate = picked;
+        _expiryDate = _effectiveOpenedExpiry(picked);
         _expiryTouched = true;
       });
     }
@@ -187,7 +216,8 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
 
   void _shiftExpiry(int days) {
     setState(() {
-      _expiryDate = DateTime.now().add(Duration(days: days));
+      _sealedExpiryDate = DateTime.now().add(Duration(days: days));
+      _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
       _expiryTouched = true;
     });
   }
@@ -210,23 +240,47 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
         _unit = result.unit;
       }
       if (result.expiryDate != null) {
-        _expiryDate = result.expiryDate!;
+        _sealedExpiryDate = result.expiryDate!;
+        _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
         _expiryTouched = true;
         _expirySource = ProductDataSource.packageOcr;
       }
-      if (result.openingDays != null) _openingDays = result.openingDays!;
+      if (result.openingDays != null) {
+        _openingDays = result.openingDays!;
+        _openingDaysController.text = '$_openingDays';
+        _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
+      }
     });
   }
 
   void _toggleOpened(bool value) {
     setState(() {
       _openedDate = value ? DateTime.now() : null;
-      if (value) {
-        final afterOpening = DateTime.now().add(Duration(days: _openingDays));
-        if (afterOpening.isBefore(_expiryDate)) _expiryDate = afterOpening;
-        _expiryTouched = true;
-      }
+      _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
+      if (value) _expiryTouched = true;
     });
+  }
+
+  DateTime _effectiveOpenedExpiry(DateTime sealedExpiry) {
+    final opened = _openedDate;
+    if (opened == null) return sealedExpiry;
+    final afterOpening = opened.add(Duration(days: _openingDays));
+    return afterOpening.isBefore(sealedExpiry) ? afterOpening : sealedExpiry;
+  }
+
+  void _updateOpeningDays(String raw) {
+    final days = int.tryParse(raw.trim());
+    if (days == null || days < 1 || days > 365) return;
+    setState(() {
+      _openingDays = days;
+      _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
+    });
+  }
+
+  String? get _categoryPickerValue {
+    final category = _category;
+    if (category == null) return null;
+    return ProductLabels.categories.containsKey(category) ? category : 'other';
   }
 
   Future<void> _save() async {
@@ -365,7 +419,8 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
             ),
             const SizedBox(height: 14),
             DropdownButtonFormField<String>(
-              initialValue: _category,
+              key: ValueKey(_categoryPickerValue),
+              initialValue: _categoryPickerValue,
               decoration: const InputDecoration(
                 labelText: 'Категория',
                 prefixIcon: Icon(Icons.category_outlined),
@@ -380,16 +435,48 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
               ],
               onChanged: (value) {
                 setState(() {
-                  _category = value;
+                  if (value == 'other') {
+                    final custom = _customCategoryController.text.trim();
+                    _category = custom.isEmpty ? 'other' : custom;
+                  } else {
+                    _category = value;
+                  }
                   _categoryTouched = true;
                   if (!_expiryTouched && value != null) {
                     final days =
                         ProductMatcher.estimateShelfLife(value, _zoneId);
-                    _expiryDate = DateTime.now().add(Duration(days: days));
+                    _sealedExpiryDate =
+                        DateTime.now().add(Duration(days: days));
+                    _expiryDate = _effectiveOpenedExpiry(_sealedExpiryDate);
                   }
                 });
               },
             ),
+            if (_categoryPickerValue == 'other') ...[
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _customCategoryController,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'Своя категория',
+                  hintText: 'Например, детское питание',
+                  prefixIcon: Icon(Icons.edit_outlined),
+                ),
+                validator: (value) {
+                  final text = value?.trim() ?? '';
+                  if (text.isNotEmpty && text.length < 2) {
+                    return 'Минимум 2 символа';
+                  }
+                  if (text.length > 40) return 'Не больше 40 символов';
+                  return null;
+                },
+                onChanged: (value) => setState(() {
+                  final custom = value.trim();
+                  _category = custom.isEmpty ? 'other' : custom;
+                  _categoryTouched = true;
+                }),
+              ),
+            ],
             const SizedBox(height: 20),
             Text('Где хранится', style: Theme.of(context).textTheme.labelLarge),
             const SizedBox(height: 8),
@@ -482,28 +569,27 @@ class _AddProductScreenState extends ConsumerState<AddProductScreen> {
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
                       child: Row(
                         children: [
-                          const Text('Срок после вскрытия'),
-                          const Spacer(),
-                          DropdownButton<int>(
-                            value: _openingDays,
-                            items: const [1, 2, 3, 5, 7, 14, 30]
-                                .map((days) => DropdownMenuItem(
-                                      value: days,
-                                      child: Text('$days дн.'),
-                                    ))
-                                .toList(),
-                            onChanged: (days) {
-                              if (days == null) return;
-                              setState(() {
-                                _openingDays = days;
-                                final opened = _openedDate!;
-                                final candidate =
-                                    opened.add(Duration(days: days));
-                                if (candidate.isBefore(_expiryDate)) {
-                                  _expiryDate = candidate;
+                          const Expanded(child: Text('Срок после вскрытия')),
+                          SizedBox(
+                            width: 120,
+                            child: TextFormField(
+                              controller: _openingDaysController,
+                              keyboardType: TextInputType.number,
+                              textAlign: TextAlign.end,
+                              decoration: const InputDecoration(
+                                labelText: 'Дней',
+                                suffixText: 'дн.',
+                              ),
+                              validator: (raw) {
+                                final days = int.tryParse(raw?.trim() ?? '');
+                                if (days == null || days < 1) {
+                                  return 'От 1';
                                 }
-                              });
-                            },
+                                if (days > 365) return 'До 365';
+                                return null;
+                              },
+                              onChanged: _updateOpeningDays,
+                            ),
                           ),
                         ],
                       ),

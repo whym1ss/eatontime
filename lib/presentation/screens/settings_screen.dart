@@ -1,12 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/constants/app_constants.dart';
-import '../../data/models/user_profile.dart';
-import '../../data/repositories/product_repository.dart';
-import '../../providers/core_providers.dart';
-import '../../providers/product_providers.dart';
 import '../../providers/settings_providers.dart';
 import '../../services/background_service.dart';
 import '../../services/notification_service.dart';
@@ -19,52 +16,14 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final profile = ref.watch(userProfileProvider);
     final notifier = ref.read(userProfileProvider.notifier);
-    final summary = ref.watch(homeSummaryProvider);
     final supportsBackgroundExpiry =
         defaultTargetPlatform == TargetPlatform.android;
-
-    final time = TimeOfDay(
-      hour: profile.notificationHour,
-      minute: profile.notificationMinute,
-    );
 
     return Scaffold(
       appBar: AppBar(title: const Text('Настройки')),
       body: ListView(
         padding: const EdgeInsets.only(bottom: 90),
         children: [
-          const _Section(title: 'Аккаунт'),
-          ListTile(
-            leading: const Icon(Icons.person_outline),
-            title: Text(profile.displayName ?? profile.email ?? 'Гость'),
-            subtitle: Text(
-              profile.isPremium
-                  ? 'Premium'
-                  : AppConstants.billingEnabled
-                      ? 'Бесплатный тариф'
-                      : 'Локальный режим · без ограничений',
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.inventory_2_outlined),
-            title: const Text('Продуктов в холодильнике'),
-            trailing: Text(
-              AppConstants.billingEnabled
-                  ? '${summary.total} / ${profile.productLimit}'
-                  : '${summary.total}',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ),
-          if (AppConstants.billingEnabled && !profile.isPremium)
-            ListTile(
-              leading: const Icon(Icons.workspace_premium_outlined),
-              title: const Text('Подключить Premium'),
-              subtitle: const Text(
-                'Без лимита продуктов, семейный доступ, экспорт',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => _showPremiumSheet(context, ref),
-            ),
           const _Section(title: 'Уведомления'),
           SwitchListTile(
             secondary: const Icon(Icons.notifications_outlined),
@@ -89,65 +48,80 @@ class SettingsScreen extends ConsumerWidget {
                         );
                         return;
                       }
-                      await BackgroundService.schedule(
-                        hour: profile.notificationHour,
-                        minute: profile.notificationMinute,
-                      );
+                      await notifier.setNotificationsEnabled(true);
+                      try {
+                        await BackgroundService.schedule(
+                          hour: profile.notificationHour,
+                          minute: profile.notificationMinute,
+                        );
+                      } catch (error) {
+                        await notifier.setNotificationsEnabled(false);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Не удалось запланировать уведомления: $error',
+                              ),
+                            ),
+                          );
+                        }
+                      }
                     } else {
+                      await notifier.setNotificationsEnabled(false);
                       await BackgroundService.cancel();
                       await NotificationService.instance.cancelAll();
                     }
-                    await notifier.setNotificationsEnabled(v);
                   },
           ),
           ListTile(
             enabled: profile.notificationsEnabled,
             leading: const Icon(Icons.schedule),
-            title: const Text('Время напоминания'),
-            trailing: Text(time.format(context)),
-            onTap: !profile.notificationsEnabled
-                ? null
-                : () async {
-                    final picked = await showTimePicker(
-                      context: context,
-                      initialTime: time,
-                    );
-                    if (picked == null) return;
-                    await notifier.setNotificationTime(picked);
-                    await BackgroundService.schedule(
-                      hour: picked.hour,
-                      minute: picked.minute,
-                    );
-                  },
+            title: const Text('Фоновая проверка'),
+            subtitle: const Text(
+              'Примерно раз в час — Android может немного задержать запуск',
+            ),
+            trailing: const Icon(Icons.info_outline),
           ),
           ListTile(
             enabled: profile.notificationsEnabled,
             leading: const Icon(Icons.event_available_outlined),
             title: const Text('Предупреждать заранее'),
-            trailing: DropdownButton<int>(
-              value: profile.notifyDaysBefore,
-              underline: const SizedBox.shrink(),
-              items: const [
-                DropdownMenuItem(value: 1, child: Text('за 1 день')),
-                DropdownMenuItem(value: 2, child: Text('за 2 дня')),
-                DropdownMenuItem(value: 3, child: Text('за 3 дня')),
-                DropdownMenuItem(value: 5, child: Text('за 5 дней')),
-                DropdownMenuItem(value: 7, child: Text('за неделю')),
-              ],
-              onChanged: !profile.notificationsEnabled
-                  ? null
-                  : (v) => v == null ? null : notifier.setNotifyDaysBefore(v),
-            ),
+            subtitle: const Text('Можно указать часы или дни'),
+            trailing: Text(_leadTimeLabel(profile.notifyHoursBefore)),
+            onTap: !profile.notificationsEnabled
+                ? null
+                : () async {
+                    final hours = await _pickNotifyHours(
+                      context,
+                      profile.notifyHoursBefore,
+                    );
+                    if (hours != null) {
+                      await notifier.setNotifyHoursBefore(hours);
+                    }
+                  },
           ),
           ListTile(
             leading: const Icon(Icons.notification_add_outlined),
             title: const Text('Проверить уведомления'),
-            subtitle: const Text('Отправить тестовое сообщение'),
+            subtitle: const Text('Запросить разрешение и отправить тест'),
             onTap: () async {
-              await NotificationService.instance.show(
-                id: 9999,
-                title: 'Eat on Time',
-                body: 'Уведомления работают 👌',
+              final messenger = ScaffoldMessenger.of(context);
+              final sent =
+                  await NotificationService.instance.showTestNotification();
+              if (!sent) {
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Не удалось показать уведомление. Разрешите уведомления '
+                      'для Eat on Time в настройках Android.',
+                    ),
+                  ),
+                );
+                return;
+              }
+              messenger.showSnackBar(
+                const SnackBar(
+                    content: Text('Тестовое уведомление отправлено')),
               );
             },
           ),
@@ -176,24 +150,14 @@ class SettingsScreen extends ConsumerWidget {
               MaterialPageRoute(builder: (_) => const ArchiveScreen()),
             ),
           ),
-          ListTile(
-            leading: const Icon(Icons.sync),
-            title: const Text('Синхронизировать сейчас'),
-            onTap: () async {
-              final messenger = ScaffoldMessenger.of(context);
-              try {
-                final result = await ref.read(productRepositoryProvider).sync();
-                messenger.showSnackBar(
-                  SnackBar(content: Text(_syncMessage(result))),
-                );
-              } catch (e) {
-                messenger.showSnackBar(
-                  SnackBar(content: Text('Не удалось: $e')),
-                );
-              }
-            },
-          ),
           const _Section(title: 'О приложении'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _SupportCard(
+              onTap: () => _openDonationPage(context),
+            ),
+          ),
+          const SizedBox(height: 8),
           ListTile(
             leading: const Icon(Icons.storage_outlined),
             title: const Text('Источники карточек товаров'),
@@ -216,90 +180,190 @@ class SettingsScreen extends ConsumerWidget {
           const ListTile(
             leading: Icon(Icons.info_outline),
             title: Text('Eat on Time'),
-            subtitle: Text('Версия 1.0.0 · умный хранитель сроков годности'),
+            subtitle: Text('Версия 1.1.0 · умный хранитель сроков годности'),
           ),
         ],
       ),
     );
   }
 
-  String _syncMessage(SyncResult result) => switch (result) {
-        SyncResult.synced => 'Данные синхронизированы',
-        SyncResult.offline => 'Нет подключения к интернету',
-        SyncResult.signedOut => 'Вход не выполнен — данные сохранены локально',
-        SyncResult.unavailable =>
-          'Supabase не настроен — данные хранятся локально',
-        SyncResult.alreadyRunning => 'Синхронизация уже выполняется',
-      };
+  String _leadTimeLabel(int hours) {
+    if (hours % 24 == 0) {
+      final days = hours ~/ 24;
+      return '$days ${_plural(days, 'день', 'дня', 'дней')}';
+    }
+    return '$hours ${_plural(hours, 'час', 'часа', 'часов')}';
+  }
 
-  void _showPremiumSheet(BuildContext context, WidgetRef ref) {
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Eat on Time Premium',
-                style: Theme.of(ctx).textTheme.titleLarge),
-            const SizedBox(height: 14),
-            const _Feature(
-              icon: Icons.all_inclusive,
-              text: 'Без лимита в '
-                  '${AppConstants.maxFreeProducts} продуктов',
-            ),
-            const _Feature(
-              icon: Icons.family_restroom,
-              text: 'Общий холодильник для всей семьи',
-            ),
-            const _Feature(
-              icon: Icons.receipt_long,
-              text: 'Безлимитный скан чеков',
-            ),
-            const _Feature(
-              icon: Icons.download_outlined,
-              text: 'Экспорт статистики',
-            ),
-            const SizedBox(height: 20),
-            FilledButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Покупки появятся в следующей версии'),
+  String _plural(int value, String one, String few, String many) {
+    final mod10 = value % 10;
+    final mod100 = value % 100;
+    if (mod10 == 1 && mod100 != 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+      return few;
+    }
+    return many;
+  }
+
+  Future<int?> _pickNotifyHours(BuildContext context, int currentHours) async {
+    var unit = currentHours >= 24 && currentHours % 24 == 0 ? 'days' : 'hours';
+    final initial = unit == 'days' ? currentHours ~/ 24 : currentHours;
+    final controller = TextEditingController(text: '$initial');
+    final formKey = GlobalKey<FormState>();
+    try {
+      return await showDialog<int>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Когда предупредить'),
+            content: Form(
+              key: formKey,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: controller,
+                      autofocus: true,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Значение'),
+                      validator: (raw) {
+                        final value = int.tryParse(raw?.trim() ?? '');
+                        if (value == null || value < 1) return 'Минимум 1';
+                        final hours = unit == 'days' ? value * 24 : value;
+                        if (hours > 720) return 'Не больше 30 дней';
+                        return null;
+                      },
+                    ),
                   ),
-                );
-              },
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(50),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      initialValue: unit,
+                      decoration: const InputDecoration(labelText: 'Единица'),
+                      items: const [
+                        DropdownMenuItem(value: 'hours', child: Text('Часы')),
+                        DropdownMenuItem(value: 'days', child: Text('Дни')),
+                      ],
+                      onChanged: (value) => setDialogState(
+                        () => unit = value ?? 'hours',
+                      ),
+                    ),
+                  ),
+                ],
               ),
-              child: const Text('Оформить'),
             ),
-          ],
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Отмена'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  if (!formKey.currentState!.validate()) return;
+                  final value = int.parse(controller.text.trim());
+                  Navigator.pop(
+                    dialogContext,
+                    unit == 'days' ? value * 24 : value,
+                  );
+                },
+                child: const Text('Сохранить'),
+              ),
+            ],
+          ),
         ),
-      ),
+      );
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<void> _openDonationPage(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final opened = await launchUrl(
+      Uri.parse(AppConstants.donationUrl),
+      mode: LaunchMode.externalApplication,
     );
+    if (!opened) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Не удалось открыть страницу поддержки'),
+        ),
+      );
+    }
   }
 }
 
-class _Feature extends StatelessWidget {
-  const _Feature({required this.icon, required this.text});
+class _SupportCard extends StatelessWidget {
+  const _SupportCard({required this.onTap});
 
-  final IconData icon;
-  final String text;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(width: 14),
-          Expanded(child: Text(text)),
-        ],
+    final scheme = Theme.of(context).colorScheme;
+
+    return Semantics(
+      button: true,
+      label: 'Поддержать автора через DonationAlerts',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: Ink(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  scheme.primaryContainer,
+                  scheme.secondaryContainer,
+                ],
+              ),
+              border: Border.all(
+                color: scheme.primary.withValues(alpha: 0.18),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: scheme.surface.withValues(alpha: 0.82),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Text('😺', style: TextStyle(fontSize: 28)),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Поддержать автора',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Поддержи пж, для тебя стараюсь',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.open_in_new_rounded,
+                  color: scheme.primary,
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -11,7 +11,7 @@ if (localPropertiesFile.exists()) {
 }
 
 def flutterVersionCode = localProperties.getProperty("flutter.versionCode") ?: "1"
-def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "1.0.0"
+def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "1.1.0"
 
 // Подпись релиза: android/key.properties (не коммитится).
 def keystoreProperties = new Properties()
@@ -38,7 +38,7 @@ android {
 
     defaultConfig {
         applicationId = "com.eatontime.app"
-        // 21 — минимум для camera/mobile_scanner, 23 — для ML Kit.
+        // Flutter и текущие Android-плагины требуют API 24 или новее.
         minSdkVersion = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutterVersionCode.toInteger()

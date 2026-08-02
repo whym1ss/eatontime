@@ -25,10 +25,23 @@ class ProductResolutionService {
 
   static const _cacheKey = 'smart_product_cache_v1';
   static const _maxCacheEntries = 80;
+  static const _connectTimeout = Duration(seconds: 4);
+  static const _requestTimeout = Duration(seconds: 6);
+  static const _responseTimeout = Duration(seconds: 5);
+  static const _maxResponseBytes = 512 * 1024;
+  static const _openFoodFactsFields =
+      'code,product_name_ru,abbreviated_product_name_ru,generic_name_ru,'
+      'product_name,product_name_en,generic_name,brands,brands_tags,'
+      'categories,categories_tags,quantity,product_quantity,'
+      'product_quantity_unit,image_front_small_url';
 
   Future<ResolvedProductDraft> resolve(String rawCode) async {
     final parsed = parseCode(rawCode);
     final lookupCode = parsed.gtin ?? rawCode.trim();
+    final lookupCandidates = parsed.gtin != null || _isRetailBarcode(lookupCode)
+        ? gtinLookupCandidates(lookupCode)
+        : <String>[lookupCode];
+    if (lookupCandidates.isEmpty) lookupCandidates.add(lookupCode);
     ResolvedProductDraft result = ResolvedProductDraft(
       code: parsed,
       expiryDate: parsed.expiryDate == null
@@ -42,7 +55,11 @@ class ProductResolutionService {
       batch: parsed.batch,
     );
 
-    final existing = await repository.findByBarcode(lookupCode);
+    var existing = await repository.findByBarcode(lookupCandidates.first);
+    for (final candidate in lookupCandidates.skip(1)) {
+      if (existing != null) break;
+      existing = await repository.findByBarcode(candidate);
+    }
     if (existing != null) {
       result = _merge(
         result,
@@ -63,7 +80,11 @@ class ProductResolutionService {
       );
     }
 
-    final catalog = await repository.lookupCatalog(lookupCode);
+    var catalog = await repository.lookupCatalog(lookupCandidates.first);
+    for (final candidate in lookupCandidates.skip(1)) {
+      if (catalog != null) break;
+      catalog = await repository.lookupCatalog(candidate);
+    }
     if (catalog != null) {
       result = _merge(
         result,
@@ -76,7 +97,11 @@ class ProductResolutionService {
       );
     }
 
-    final cached = _readCache(lookupCode);
+    ResolvedProductDraft? cached;
+    for (final candidate in lookupCandidates) {
+      cached ??= _readCache(candidate);
+      if (cached != null) break;
+    }
     if (cached != null) result = _merge(result, cached);
 
     if (existing == null || result.name == null) {
@@ -84,7 +109,10 @@ class ProductResolutionService {
       if (official != null) result = _merge(result, official);
     }
 
-    if (_isRetailBarcode(lookupCode) && result.name == null) {
+    if (lookupCandidates.any(_isRetailBarcode) &&
+        (result.name == null ||
+            result.brand == null ||
+            result.category == null)) {
       final openFoodFacts = await _lookupOpenFoodFacts(parsed);
       if (openFoodFacts != null) result = _merge(result, openFoodFacts);
     }
@@ -124,37 +152,47 @@ class ProductResolutionService {
     if (warnings.isNotEmpty) {
       result = result.copyWith(recallWarnings: warnings);
     }
-    _writeCache(lookupCode, result);
+    _writeCache(lookupCandidates.first, result);
     return result;
   }
 
   ParsedScanCode parseCode(String raw) {
     final value = raw.trim();
-    final fiscal = RegExp(r'(?:^|[?&])t=\d{8}T\d{4}', caseSensitive: false)
-            .hasMatch(value) &&
-        RegExp(r'(?:^|[?&])fn=\d+', caseSensitive: false).hasMatch(value);
-    if (fiscal) return ParsedScanCode(raw: value, isFiscalReceipt: true);
+    if (parseFiscalReceiptQr(value) != null) {
+      return ParsedScanCode(raw: value, isFiscalReceipt: true);
+    }
 
     String? gtin;
     DateTime? expiry;
     String? batch;
     String? serial;
-    final digitsOnly = value.replaceAll(RegExp(r'\D'), '');
     if (RegExp(r'^\d{8,14}$').hasMatch(value)) gtin = normalizeGtin(value);
 
-    final aiGtin = RegExp(r'(?:\(01\)|^01)(\d{14})').firstMatch(value);
-    if (aiGtin != null) gtin = aiGtin.group(1);
-    final aiExpiry = RegExp(r'(?:\(17\)|17)(\d{6})').firstMatch(value);
-    if (aiExpiry != null) expiry = _parseGs1Date(aiExpiry.group(1)!);
+    final digitalLink = _parseGs1DigitalLink(value);
+    gtin ??= digitalLink.gtin;
+    expiry ??= digitalLink.expiry;
+    batch ??= digitalLink.batch;
+    serial ??= digitalLink.serial;
+
+    final aiGtin = RegExp(r'\(01\)(\d{14})').firstMatch(value);
+    if (aiGtin != null) gtin ??= aiGtin.group(1);
+    final aiExpiry = RegExp(r'\(17\)(\d{6})').firstMatch(value);
+    final aiBestBefore = RegExp(r'\(15\)(\d{6})').firstMatch(value);
+    if (aiExpiry != null) {
+      expiry = _parseGs1Date(aiExpiry.group(1)!);
+    } else if (aiBestBefore != null) {
+      expiry ??= _parseGs1Date(aiBestBefore.group(1)!);
+    }
     final aiBatch = RegExp(r'\(10\)([^()\u001d]+)').firstMatch(value);
     final aiSerial = RegExp(r'\(21\)([^()\u001d]+)').firstMatch(value);
-    batch = aiBatch?.group(1);
-    serial = aiSerial?.group(1);
+    batch ??= aiBatch?.group(1);
+    serial ??= aiSerial?.group(1);
 
-    // Часть сканеров удаляет скобки AI, но оставляет разделитель GS.
-    if (gtin == null && digitsOnly.length >= 16 && value.startsWith('01')) {
-      gtin = normalizeGtin(value.substring(2, 16));
-    }
+    final compact = _parseCompactGs1(value);
+    gtin ??= compact.gtin;
+    expiry ??= compact.expiry;
+    batch ??= compact.batch;
+    serial ??= compact.serial;
     return ParsedScanCode(
       raw: value,
       gtin: gtin,
@@ -166,6 +204,181 @@ class ProductResolutionService {
 
   String normalizeGtin(String value) {
     return value.replaceAll(RegExp(r'\D'), '');
+  }
+
+  /// Returns equivalent retail barcode representations without dropping the
+  /// scanner value. Local history can contain UPC/EAN/GTIN with a different
+  /// number of leading zeroes, so all safe leading-zero variants are checked.
+  List<String> gtinLookupCandidates(String value) {
+    final digits = normalizeGtin(value);
+    if (digits.isEmpty || digits.length > 14) return <String>[];
+
+    final candidates = <String>{digits};
+    final withoutLeadingZeroes = digits.replaceFirst(RegExp(r'^0+(?=\d)'), '');
+    if (const {8, 12, 13, 14}.contains(withoutLeadingZeroes.length)) {
+      candidates.add(withoutLeadingZeroes);
+    }
+
+    // The same GTIN can be stored as UPC-A, EAN-13 or GTIN-14. Only leading
+    // zeroes are added; significant digits and the check digit stay intact.
+    if (digits.length <= 12) candidates.add(digits.padLeft(13, '0'));
+    if (digits.length <= 13) candidates.add(digits.padLeft(14, '0'));
+
+    return candidates
+        .where((candidate) => const {8, 12, 13, 14}.contains(candidate.length))
+        .toList(growable: true);
+  }
+
+  /// GS1 modulo-10 validation. Parsing stays lenient so a mistyped code can
+  /// still match local history, while public network lookups use valid GTINs.
+  bool isValidGtin(String value) {
+    final digits = value.trim();
+    if (!RegExp(r'^\d+$').hasMatch(digits)) return false;
+    if (!const {8, 12, 13, 14}.contains(digits.length)) return false;
+    var sum = 0;
+    for (var index = digits.length - 2, position = 1;
+        index >= 0;
+        index--, position++) {
+      final digit = int.parse(digits[index]);
+      sum += digit * (position.isOdd ? 3 : 1);
+    }
+    final expected = (10 - (sum % 10)) % 10;
+    return expected == int.parse(digits[digits.length - 1]);
+  }
+
+  /// Mirrors Open Food Facts' documented leading-zero normalization.
+  String normalizeOpenFoodFactsBarcode(String value) {
+    final digits = normalizeGtin(value);
+    if (digits.isEmpty) return '';
+    final significant = digits.replaceFirst(RegExp(r'^0+(?=\d)'), '');
+    if (significant.length <= 7) return significant.padLeft(8, '0');
+    if (significant.length >= 9 && significant.length <= 12) {
+      return significant.padLeft(13, '0');
+    }
+    return significant;
+  }
+
+  FiscalReceiptData? parseFiscalReceiptQr(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return null;
+    final params = <String, String>{};
+    final uri = Uri.tryParse(value);
+    if (uri != null) params.addAll(uri.queryParameters);
+    final query = value.contains('?') ? value.split('?').last : value;
+    try {
+      params.addAll(Uri.splitQueryString(query));
+    } catch (_) {
+      // Необычная кодировка будет проверена регулярными выражениями ниже.
+    }
+    final normalized = <String, String>{
+      for (final entry in params.entries) entry.key.toLowerCase(): entry.value,
+    };
+    final timestamp = normalized['t'];
+    final fiscalDrive = normalized['fn'];
+    if (timestamp == null || fiscalDrive == null) return null;
+    final dateMatch =
+        RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})$', caseSensitive: false)
+            .firstMatch(timestamp);
+    DateTime? dateTime;
+    if (dateMatch != null) {
+      final values = [
+        for (var i = 1; i <= 5; i++) int.tryParse(dateMatch.group(i)!),
+      ];
+      if (values.every((value) => value != null)) {
+        final candidate = DateTime(
+          values[0]!,
+          values[1]!,
+          values[2]!,
+          values[3]!,
+          values[4]!,
+        );
+        if (candidate.year == values[0] &&
+            candidate.month == values[1] &&
+            candidate.day == values[2]) {
+          dateTime = candidate;
+        }
+      }
+    }
+    return FiscalReceiptData(
+      raw: value,
+      dateTime: dateTime,
+      total: double.tryParse((normalized['s'] ?? '').replaceAll(',', '.')),
+      fiscalDrive: fiscalDrive,
+      fiscalDocument: normalized['i'],
+      fiscalSign: normalized['fp'],
+      operationType: int.tryParse(normalized['n'] ?? ''),
+    );
+  }
+
+  ({String? gtin, DateTime? expiry, String? batch, String? serial})
+      _parseGs1DigitalLink(String value) {
+    final uri = Uri.tryParse(value);
+    if (uri == null || !uri.hasScheme) {
+      return (gtin: null, expiry: null, batch: null, serial: null);
+    }
+    final fields = <String, String>{};
+    final segments = uri.pathSegments.map(Uri.decodeComponent).toList();
+    for (var index = 0; index + 1 < segments.length; index += 2) {
+      final ai = segments[index];
+      if (!RegExp(r'^\d{2,4}$').hasMatch(ai)) continue;
+      fields[ai] = segments[index + 1];
+    }
+    final expiryRaw = fields['17'] ?? fields['15'];
+    return (
+      gtin: fields['01'] == null ? null : normalizeGtin(fields['01']!),
+      expiry: expiryRaw == null ? null : _parseGs1Date(expiryRaw),
+      batch: fields['10'],
+      serial: fields['21'],
+    );
+  }
+
+  ({String? gtin, DateTime? expiry, String? batch, String? serial})
+      _parseCompactGs1(String value) {
+    var payload = value
+        .replaceFirst(RegExp(r'^\][A-Za-z]\d'), '')
+        .replaceFirst(RegExp(r'^\u001d+'), '');
+    String? gtin;
+    DateTime? expiry;
+    String? batch;
+    String? serial;
+    var cursor = 0;
+    while (cursor < payload.length) {
+      if (payload.codeUnitAt(cursor) == 29) {
+        cursor++;
+        continue;
+      }
+      if (cursor + 2 > payload.length) break;
+      final ai = payload.substring(cursor, cursor + 2);
+      if (ai == '01') {
+        if (cursor + 16 > payload.length) break;
+        final rawGtin = payload.substring(cursor + 2, cursor + 16);
+        if (!RegExp(r'^\d{14}$').hasMatch(rawGtin)) break;
+        gtin = normalizeGtin(rawGtin);
+        cursor += 16;
+        continue;
+      }
+      if (const {'11', '13', '15', '16', '17'}.contains(ai)) {
+        if (cursor + 8 > payload.length) break;
+        final rawDate = payload.substring(cursor + 2, cursor + 8);
+        if (!RegExp(r'^\d{6}$').hasMatch(rawDate)) break;
+        final parsed = _parseGs1Date(rawDate);
+        if (ai == '17' || (ai == '15' && expiry == null)) expiry = parsed;
+        cursor += 8;
+        continue;
+      }
+      if (ai == '10' || ai == '21') {
+        final start = cursor + 2;
+        final separator = payload.indexOf('\u001d', start);
+        final end = separator < 0 ? payload.length : separator;
+        final field = payload.substring(start, end);
+        if (ai == '10') batch = field;
+        if (ai == '21') serial = field;
+        cursor = separator < 0 ? payload.length : separator + 1;
+        continue;
+      }
+      break;
+    }
+    return (gtin: gtin, expiry: expiry, batch: batch, serial: serial);
   }
 
   Future<List<Map<String, dynamic>>> resolveFiscalReceipt(String qr) async {
@@ -244,61 +457,151 @@ class ProductResolutionService {
   ) async {
     final gtin = code.gtin;
     if (gtin == null) return null;
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
+    final validCandidates = gtinLookupCandidates(gtin).where(isValidGtin);
+    if (validCandidates.isEmpty) return null;
+    final barcode = normalizeOpenFoodFactsBarcode(validCandidates.first);
+    final client = HttpClient()
+      ..connectionTimeout = _connectTimeout
+      ..idleTimeout = _responseTimeout;
     try {
-      final uri = Uri.https(
+      final v3 = Uri.https(
         'world.openfoodfacts.org',
-        '/api/v3/product/$gtin',
+        '/api/v3/product/$barcode',
         {
-          'fields':
-              'code,product_name_ru,product_name,brands,categories_tags,quantity,image_front_small_url'
+          'lc': 'ru',
+          'cc': 'ru',
+          'tags_lc': 'ru',
+          'fields': _openFoodFactsFields,
         },
       );
-      final request = await client.getUrl(uri);
-      request.headers.set(
-        HttpHeaders.userAgentHeader,
-        'EatOnTime/1.0 (Android; contact: support@eatontime.app)',
+      final first = await _getOpenFoodFactsJson(client, v3);
+      if (first.$1 == HttpStatus.ok) {
+        final parsed = parseOpenFoodFactsPayload(first.$2, code);
+        if (parsed != null) return parsed;
+      }
+      // A 404 is a definitive "not found". Rate-limit/service-unavailable
+      // responses are not retried so the app remains a polite API client.
+      if (const {
+        HttpStatus.notFound,
+        HttpStatus.tooManyRequests,
+        HttpStatus.serviceUnavailable,
+      }.contains(first.$1)) {
+        return null;
+      }
+
+      // v2 is deprecated but remains an officially documented compatibility
+      // endpoint. It is attempted once only when v3 returned no usable record.
+      final v2 = Uri.https(
+        'world.openfoodfacts.org',
+        '/api/v2/product/$barcode.json',
+        {'fields': _openFoodFactsFields},
       );
-      final response =
-          await request.close().timeout(const Duration(seconds: 6));
-      if (response.statusCode != HttpStatus.ok) return null;
-      final body = await utf8.decoder.bind(response).join();
-      final json = jsonDecode(body);
-      if (json is! Map || json['product'] is! Map) return null;
-      final product = Map<String, dynamic>.from(json['product'] as Map);
-      final name = _nonEmpty(product['product_name_ru']) ??
-          _nonEmpty(product['product_name']);
-      if (name == null) return null;
-      final category = _offCategory(product['categories_tags'], name);
-      final quantity = _parseQuantity(_nonEmpty(product['quantity']));
-      return ResolvedProductDraft(
-        code: code,
-        name: ResolvedField(
-          value: name,
-          source: ProductDataSource.openFoodFacts,
-          confidence: 0.86,
-        ),
-        brand: _nonEmpty(product['brands']) == null
-            ? null
-            : ResolvedField(
-                value: _nonEmpty(product['brands'])!,
-                source: ProductDataSource.openFoodFacts,
-                confidence: 0.82,
-              ),
-        category: ResolvedField(
-          value: category,
-          source: ProductDataSource.openFoodFacts,
-          confidence: 0.78,
-        ),
-        quantity: quantity.$1,
-        unit: quantity.$2,
-        imageUrl: _nonEmpty(product['image_front_small_url']),
-      );
+      final fallback = await _getOpenFoodFactsJson(client, v2);
+      if (fallback.$1 != HttpStatus.ok) return null;
+      return parseOpenFoodFactsPayload(fallback.$2, code);
     } catch (_) {
       return null;
     } finally {
       client.close(force: true);
     }
+  }
+
+  Future<(int, Object?)> _getOpenFoodFactsJson(
+    HttpClient client,
+    Uri uri,
+  ) =>
+      _readOpenFoodFactsJson(client, uri).timeout(_requestTimeout);
+
+  Future<(int, Object?)> _readOpenFoodFactsJson(
+    HttpClient client,
+    Uri uri,
+  ) async {
+    final request = await client.getUrl(uri).timeout(_connectTimeout);
+    request.headers.set(
+      HttpHeaders.userAgentHeader,
+      'EatOnTime/1.1.0 (https://github.com/whym1ss/eatontime)',
+    );
+    request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+    final response = await request.close().timeout(_requestTimeout);
+    if (response.statusCode != HttpStatus.ok) {
+      return (response.statusCode, null);
+    }
+
+    final bytes = <int>[];
+    await for (final chunk in response.timeout(_responseTimeout)) {
+      if (bytes.length + chunk.length > _maxResponseBytes) {
+        throw const FormatException('Open Food Facts response is too large');
+      }
+      bytes.addAll(chunk);
+    }
+    final payload = jsonDecode(utf8.decode(bytes));
+    return (response.statusCode, payload);
+  }
+
+  /// Converts either the documented v3 or v2 payload to an app draft. This is
+  /// intentionally pure so malformed community data cannot pollute local data.
+  ResolvedProductDraft? parseOpenFoodFactsPayload(
+    Object? payload,
+    ParsedScanCode code,
+  ) {
+    if (payload is! Map) return null;
+    final root = Map<String, dynamic>.from(payload);
+    final status = root['status'];
+    final successful = status is num && status == 1 ||
+        status is String &&
+            (status == '1' || status.toLowerCase().startsWith('success'));
+    if (!successful) return null;
+    if (root['product'] is! Map) return null;
+    final product = Map<String, dynamic>.from(root['product'] as Map);
+
+    final responseCode = _nonEmpty(product['code'] ?? root['code']);
+    if (code.gtin != null &&
+        (responseCode == null ||
+            !_barcodesEquivalent(code.gtin!, responseCode))) {
+      return null;
+    }
+
+    final name = _validProductName(_firstText(product, const [
+      'product_name_ru',
+      'abbreviated_product_name_ru',
+      'generic_name_ru',
+      'product_name',
+      'product_name_en',
+      'generic_name',
+    ]));
+    if (name == null) return null;
+    final brand = _validBrand(_firstText(product, const ['brands']));
+    final categorySource = [
+      product['categories_tags_ru'],
+      product['categories_tags'],
+      product['categories_ru'],
+      product['categories'],
+    ];
+    final category = _offCategory(categorySource, name);
+    final quantity = _parseOffQuantity(product);
+    return ResolvedProductDraft(
+      code: code,
+      name: ResolvedField(
+        value: name,
+        source: ProductDataSource.openFoodFacts,
+        confidence: 0.86,
+      ),
+      brand: brand == null
+          ? null
+          : ResolvedField(
+              value: brand,
+              source: ProductDataSource.openFoodFacts,
+              confidence: 0.82,
+            ),
+      category: ResolvedField(
+        value: category,
+        source: ProductDataSource.openFoodFacts,
+        confidence: 0.78,
+      ),
+      quantity: quantity.$1,
+      unit: quantity.$2,
+      imageUrl: _safeImageUrl(product['image_front_small_url']),
+    );
   }
 
   Future<List<String>> _lookupRecalls(ParsedScanCode code) async {
@@ -446,6 +749,101 @@ class ProductResolutionService {
     }
   }
 
+  String? _firstText(Map<String, dynamic> product, List<String> keys) {
+    final localizedKeys = keys.where((key) => key.endsWith('_ru')).toList();
+    for (final key in localizedKeys) {
+      final value = _nonEmpty(product[key]);
+      if (value != null) return value;
+    }
+    // Some imports use regional suffixes such as product_name_ru-RU.
+    final localizedPrefixes = localizedKeys
+        .map((key) => '${key.substring(0, key.length - 3)}_ru')
+        .toSet();
+    for (final prefix in localizedPrefixes) {
+      for (final entry in product.entries) {
+        if (entry.key.startsWith(prefix)) {
+          final value = _nonEmpty(entry.value);
+          if (value != null) return value;
+        }
+      }
+    }
+    for (final key in keys.where((key) => !key.endsWith('_ru'))) {
+      final value = _nonEmpty(product[key]);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  String? _validProductName(String? raw) {
+    final value = _cleanSingleLine(raw);
+    if (value == null || value.length < 2 || value.length > 160) return null;
+    if (!RegExp(r'[A-Za-zА-Яа-яЁё]', unicode: true).hasMatch(value)) {
+      return null;
+    }
+    final normalized = value.toLowerCase();
+    const placeholders = {
+      'unknown',
+      'unnamed',
+      'product',
+      'food',
+      'not available',
+      'n/a',
+      'неизвестно',
+      'без названия',
+      'продукт',
+      'товар',
+    };
+    if (placeholders.contains(normalized)) return null;
+    return value;
+  }
+
+  String? _validBrand(String? raw) {
+    final value = _cleanSingleLine(raw);
+    if (value == null || value.length > 120) return null;
+    return RegExp(r'[A-Za-zА-Яа-яЁё0-9]', unicode: true).hasMatch(value)
+        ? value
+        : null;
+  }
+
+  String? _cleanSingleLine(String? raw) {
+    if (raw == null) return null;
+    final value = raw
+        .replaceAll(RegExp(r'<[^>]*>'), ' ')
+        .replaceAll(RegExp(r'[\u0000-\u001f\u007f]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return value.isEmpty ? null : value;
+  }
+
+  bool _barcodesEquivalent(String left, String right) {
+    final leftDigits = left.trim();
+    final rightDigits = right.trim();
+    if (!RegExp(r'^\d{8,14}$').hasMatch(leftDigits) ||
+        !RegExp(r'^\d{8,14}$').hasMatch(rightDigits)) {
+      return false;
+    }
+    return normalizeOpenFoodFactsBarcode(leftDigits) ==
+        normalizeOpenFoodFactsBarcode(rightDigits);
+  }
+
+  String? _safeImageUrl(Object? raw) {
+    final value = _nonEmpty(raw);
+    final uri = value == null ? null : Uri.tryParse(value);
+    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) return null;
+    return uri.toString();
+  }
+
+  (int, String) _parseOffQuantity(Map<String, dynamic> product) {
+    final displayQuantity = _parseQuantity(_nonEmpty(product['quantity']));
+    if (displayQuantity.$2 != 'pcs' || displayQuantity.$1 != 1) {
+      return displayQuantity;
+    }
+    final amount = _nonEmpty(product['product_quantity']);
+    final unit = _nonEmpty(product['product_quantity_unit']);
+    if (amount == null || unit == null) return displayQuantity;
+    return _parseQuantity('$amount $unit');
+  }
+
   String _offCategory(Object? tags, String name) {
     final text = '$tags $name'.toLowerCase();
     const map = {
@@ -460,7 +858,22 @@ class ProductResolutionService {
       'condiments': ['sauce', 'condiment', 'соус'],
       'canned': ['canned', 'preserve', 'консерв'],
     };
+    const russianMap = {
+      'dairy': ['молоч', 'молоко', 'сыр', 'йогурт', 'кефир', 'творог'],
+      'meat': ['мяс', 'птица', 'колбас', 'сосиск', 'ветчин'],
+      'fish': ['рыб', 'морепродукт'],
+      'vegetables': ['овощ'],
+      'fruits': ['фрукт', 'ягод'],
+      'beverages': ['напит', 'сок', 'вода'],
+      'frozen': ['заморож'],
+      'grains': ['хлеб', 'круп', 'макарон', 'зернов'],
+      'condiments': ['соус', 'приправа'],
+      'canned': ['консерв', 'пресерв'],
+    };
     for (final entry in map.entries) {
+      if (entry.value.any(text.contains)) return entry.key;
+    }
+    for (final entry in russianMap.entries) {
       if (entry.value.any(text.contains)) return entry.key;
     }
     return ProductMatcher.inferCategory(name).category;
@@ -468,24 +881,104 @@ class ProductResolutionService {
 
   (int, String) _parseQuantity(String? raw) {
     if (raw == null) return (1, 'pcs');
-    final match = RegExp(r'(\d+(?:[.,]\d+)?)\s*(kg|кг|g|г|ml|мл|l|л)',
-            caseSensitive: false)
-        .firstMatch(raw);
-    if (match == null) return (1, 'pcs');
-    final amount = double.tryParse(match.group(1)!.replaceAll(',', '.')) ?? 1;
-    final token = match.group(2)!.toLowerCase();
-    var unit = switch (token) {
-      'кг' || 'kg' => 'kg',
-      'г' || 'g' => 'g',
-      'мл' || 'ml' => 'ml',
-      _ => 'l',
-    };
+    final normalized =
+        raw.toLowerCase().replaceAll('\u00a0', ' ').replaceAll('×', 'x');
+    const unitPattern =
+        r'(kg|кг|kilograms?|kilogrammes?|mg|мг|grams?|grammes?|гр|gr|g|г|milliliters?|millilitres?|ml|мл|centiliters?|centilitres?|cl|сл|deciliters?|decilitres?|dl|дл|liters?|litres?|l|л)';
+    final pack = RegExp(
+      '(\\d+(?:[.,]\\d+)?)\\s*[xх]\\s*'
+      '(\\d+(?:[.,]\\d+)?)\\s*$unitPattern',
+      caseSensitive: false,
+    ).firstMatch(normalized);
+    if (pack != null) {
+      final count = _parseDecimal(pack.group(1)) ?? 1;
+      final amount = _parseDecimal(pack.group(2)) ?? 1;
+      return _normalizeQuantity(count * amount, pack.group(3)!);
+    }
+
+    final measurement = RegExp(
+      '(\\d+(?:[.,]\\d+)?)\\s*$unitPattern',
+      caseSensitive: false,
+    ).firstMatch(normalized);
+    if (measurement != null) {
+      final amount = _parseDecimal(measurement.group(1)) ?? 1;
+      return _normalizeQuantity(amount, measurement.group(2)!);
+    }
+
+    final pieces = RegExp(
+      r'(\d+)\s*(?:pcs?|pieces?|шт\.?|штук|яиц)',
+      caseSensitive: false,
+    ).firstMatch(normalized);
+    if (pieces != null) {
+      return (int.parse(pieces.group(1)!).clamp(1, 1000000), 'pcs');
+    }
+    return (1, 'pcs');
+  }
+
+  double? _parseDecimal(String? raw) =>
+      double.tryParse((raw ?? '').replaceAll(',', '.'));
+
+  (int, String) _normalizeQuantity(double amount, String rawUnit) {
+    final token = rawUnit.toLowerCase();
     var normalizedAmount = amount;
-    if (amount < 1 && unit == 'kg') {
-      normalizedAmount = amount * 1000;
+    var unit = 'pcs';
+    if (const {'kg', 'кг', 'kilogram', 'kilograms', 'kilogramme', 'kilogrammes'}
+        .contains(token)) {
+      if (amount == amount.roundToDouble()) {
+        unit = 'kg';
+      } else {
+        normalizedAmount = amount * 1000;
+        unit = 'g';
+      }
+    } else if (const {'mg', 'мг'}.contains(token)) {
+      normalizedAmount = amount / 1000;
       unit = 'g';
-    } else if (amount < 1 && unit == 'l') {
-      normalizedAmount = amount * 1000;
+    } else if (const {
+      'g',
+      'gr',
+      'grams',
+      'gram',
+      'gramme',
+      'grammes',
+      'г',
+      'гр',
+    }.contains(token)) {
+      unit = 'g';
+    } else if (const {
+      'l',
+      'л',
+      'liter',
+      'liters',
+      'litre',
+      'litres',
+    }.contains(token)) {
+      if (amount == amount.roundToDouble()) {
+        unit = 'l';
+      } else {
+        normalizedAmount = amount * 1000;
+        unit = 'ml';
+      }
+    } else if (const {
+      'cl',
+      'сл',
+      'centiliter',
+      'centiliters',
+      'centilitre',
+      'centilitres',
+    }.contains(token)) {
+      normalizedAmount = amount * 10;
+      unit = 'ml';
+    } else if (const {
+      'dl',
+      'дл',
+      'deciliter',
+      'deciliters',
+      'decilitre',
+      'decilitres',
+    }.contains(token)) {
+      normalizedAmount = amount * 100;
+      unit = 'ml';
+    } else {
       unit = 'ml';
     }
     return (normalizedAmount.round().clamp(1, 1000000), unit);

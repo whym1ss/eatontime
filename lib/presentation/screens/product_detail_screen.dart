@@ -159,7 +159,7 @@ class ProductDetailScreen extends ConsumerWidget {
             OutlinedButton.icon(
               onPressed: () => _markOpened(context, ref, product),
               icon: const Icon(Icons.inventory_2_outlined),
-              label: const Text('Открыл сегодня'),
+              label: const Text('Открыть и указать срок хранения'),
             ),
           ],
           if (!product.isArchived && product.category != null) ...[
@@ -278,8 +278,52 @@ class ProductDetailScreen extends ConsumerWidget {
     WidgetRef ref,
     Product product,
   ) async {
-    final days =
+    final suggestedDays =
         ProductMatcher.estimateAfterOpening(product.category ?? 'other');
+    final controller = TextEditingController(text: '$suggestedDays');
+    final formKey = GlobalKey<FormState>();
+    final days = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Срок после вскрытия'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            controller: controller,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'Сколько дней хранить',
+              suffixText: 'дн.',
+            ),
+            validator: (raw) {
+              final value = int.tryParse(raw?.trim() ?? '');
+              if (value == null || value < 1) return 'Минимум 1 день';
+              if (value > 365) return 'Не больше 365 дней';
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (!formKey.currentState!.validate()) return;
+              Navigator.pop(
+                dialogContext,
+                int.parse(controller.text.trim()),
+              );
+            },
+            child: const Text('Открыть'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (days == null || !context.mounted) return;
     final now = DateTime.now();
     final afterOpening = now.add(Duration(days: days));
     final expiry = afterOpening.isBefore(product.expiryDate)

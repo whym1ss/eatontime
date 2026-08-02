@@ -75,17 +75,116 @@ class ProductMatcher {
     return tips.take(3).toList();
   }
 
-  /// Parse receipt line: extract product name and price
+  /// Parse a receipt item printed on one line.
+  ///
+  /// A price is deliberately required: arbitrary OCR text from the header and
+  /// footer must never turn into products. Multi-line positions are assembled
+  /// by [OcrService] before they get here.
   static ReceiptLine? parseReceiptLine(String line) {
-    final pricePattern = RegExp(r'(\d+[.,]\d{2})\s*$');
-    final match = pricePattern.firstMatch(line.trim());
+    final normalized = line
+        .replaceAll(RegExp(r'[\u00a0\t]+'), ' ')
+        .replaceAll(RegExp(r'\s{2,}'), ' ')
+        .trim();
+    if (normalized.length < 4 || isReceiptMetadata(normalized)) return null;
+
+    // Integer prices are accepted only with an explicit currency sign. This
+    // keeps package sizes and receipt numbers from being interpreted as money.
+    final pricePattern = RegExp(
+      r'(?<!\d)(\d{1,7}(?:[.,]\d{2}))\s*(?:₽|руб(?:ль|ля|лей|\.)?)?\s*$|'
+      r'(?<!\d)(\d{1,7})\s*(?:₽|руб(?:ль|ля|лей|\.)?)\s*$',
+      caseSensitive: false,
+    );
+    final match = pricePattern.firstMatch(normalized);
     if (match == null) return null;
 
-    final productName = line.substring(0, match.start).trim();
-    final price = double.tryParse(match.group(1)!.replaceAll(',', '.'));
-    if (productName.isEmpty) return null;
+    final rawPrice = match.group(1) ?? match.group(2);
+    final price = double.tryParse(rawPrice!.replaceAll(',', '.'));
+    if (price == null || price <= 0) return null;
 
-    return ReceiptLine(productName: productName, price: price);
+    var productName = normalized.substring(0, match.start).trim();
+    final calculation = RegExp(
+      r'(\d+(?:[.,]\d{1,3})?)\s*(шт(?:ук[а-яё]*)?)?\s*[xх×*]\s*'
+      r'\d+(?:[.,]\d{1,2})',
+      caseSensitive: false,
+    ).firstMatch(productName);
+    final calculatedQuantity = double.tryParse(
+      (calculation?.group(1) ?? '').replaceAll(',', '.'),
+    );
+
+    productName = productName
+        .replaceAll(
+          RegExp(
+            r'(?:^|\s+)\d+(?:[.,]\d{1,3})?\s*(?:шт(?:ук[а-яё]*)?)?\s*'
+            r'[xх×*]\s*\d+(?:[.,]\d{1,2})\s*(?:=)?\s*$',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(
+          RegExp(
+            r'(?:^|\s+)\d+(?:[.,]\d{1,3})?\s*(?:шт(?:ук[а-яё]*)?)?\s*'
+            r'[xх×*]\s*$',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(RegExp(r'\s*[=:]\s*$'), '')
+        .replaceFirst(RegExp(r'^\s*\d{1,3}\s*[.)]\s*'), '')
+        .replaceAll(RegExp(r'\s{2,}'), ' ')
+        .trim();
+    if (productName.length < 2 ||
+        !RegExp(r'[A-Za-zА-Яа-яЁё]{2,}').hasMatch(productName) ||
+        isReceiptMetadata(productName)) {
+      return null;
+    }
+
+    final extracted = extractQuantity(productName);
+    final hasWholeCalculatedQuantity = calculatedQuantity != null &&
+        calculatedQuantity == calculatedQuantity.roundToDouble() &&
+        calculatedQuantity >= 1 &&
+        calculatedQuantity <= 999;
+    final quantity =
+        hasWholeCalculatedQuantity ? calculatedQuantity.round() : extracted.$1;
+    final unit = calculation?.group(2) != null ? 'pcs' : extracted.$2;
+
+    return ReceiptLine(
+      productName: productName,
+      price: price,
+      quantity: quantity,
+      unit: unit,
+    );
+  }
+
+  /// Whether a line belongs to receipt metadata rather than a purchased item.
+  static bool isReceiptMetadata(String line) {
+    final value = line
+        .replaceAll(RegExp(r'[\u00a0\t]+'), ' ')
+        .replaceAll(RegExp(r'\s{2,}'), ' ')
+        .trim();
+    if (value.isEmpty || !RegExp(r'[A-Za-zА-Яа-яЁё]').hasMatch(value)) {
+      return true;
+    }
+
+    return RegExp(
+      r'(?:^|\s)(?:ооо|пао|ао|ип)\s|'
+      r'магазин|супермаркет|гипермаркет|торгов(?:ая|ой)\s+сет|'
+      r'кассов(?:ый|ого)\s+чек|товарн(?:ый|ого)\s+чек|чек\s*№|'
+      r'(?:^|\s)(?:инн|кпп|ккт|рн\s*ккт|зн\s*ккт|фн|фд|фпд?|фискальн[а-яё]*)\s*[:№#]?|'
+      r'кассир|оператор|смена\s*[:№#]?|приход|возврат\s+прихода|'
+      r'итог|итого|всего|подытог|сумма\s+(?:чека|покупки)|'
+      r'оплат|наличн|безналичн|банк(?:овская)?\s+карт|картой|сдача|'
+      r'ндс|налог|сно|система\s+налогооблож|'
+      r'скидк|бонус|балл|купон|акци[яи]|экономия|'
+      r'адрес\s*[:]|место\s+расчет|\b(?:ул|улица|проспект|пр-т|шоссе|пер)\.?\s+[а-яё]|'
+      r'тел(?:ефон)?\s*[:+]|\+7[\s(]|e-?mail|@|https?://|www\.|\.ru(?:\s|$)|'
+      r'дата\s*[:]|время\s*[:]|\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}\s+\d{1,2}:\d{2}|'
+      r'спасибо|добро\s+пожаловать|ждем\s+вас|служба\s+поддержки|'
+      r'цена\s+(?:кол|кол-во|количество)|наименовани[ея]\s+товар|'
+      r'qr\s*-?\s*код|провер(?:ить|ка)\s+чек|ofd|оператор\s+фискальн|'
+      r'\b(?:total|subtotal|cash|card|change|tax|receipt|cashier)\b|'
+      r'thank\s+you|store\s+address|phone\s*:',
+      caseSensitive: false,
+    ).hasMatch(value);
   }
 
   /// Extract quantity and unit from product name
@@ -97,6 +196,8 @@ class ProductMatcher {
       RegExp(r'(\d+)\s*кг', caseSensitive: false): 'kg',
       RegExp(r'(\d+)\s*г', caseSensitive: false): 'g',
       RegExp(r'(\d+)\s*шт', caseSensitive: false): 'pcs',
+      RegExp(r'(\d+)\s*(?:пачк|упаковк|бутылк)[а-яё]*', caseSensitive: false):
+          'pcs',
     };
 
     for (final entry in patterns.entries) {
@@ -268,5 +369,13 @@ class CategoryMatch {
 class ReceiptLine {
   final String productName;
   final double? price;
-  ReceiptLine({required this.productName, this.price});
+  final int quantity;
+  final String unit;
+
+  ReceiptLine({
+    required this.productName,
+    this.price,
+    this.quantity = 1,
+    this.unit = 'pcs',
+  });
 }

@@ -17,15 +17,110 @@ class OcrService {
     final input = InputImage.fromFilePath(imagePath);
     final result = await _recognizer.processImage(input);
 
-    final items = <ReceiptItem>[];
-    for (final block in result.blocks) {
-      for (final line in block.lines) {
-        final parsed = _parseLine(line.text);
-        if (parsed != null) items.add(parsed);
-      }
-    }
+    final lines = <String>[
+      for (final block in result.blocks)
+        for (final line in block.lines) line.text,
+    ];
     // Одинаковые позиции не удаляем: в чеке это могут быть разные покупки,
     // а пользователь сможет снять лишнюю галочку перед сохранением.
+    return parseReceiptLines(lines);
+  }
+
+  /// Собирает товарные позиции из строк OCR. Метод открыт для unit-тестов и
+  /// для повторного разбора текста без обращения к камере.
+  static List<ReceiptItem> parseReceiptLines(Iterable<String> rawLines) {
+    final items = <ReceiptItem>[];
+    final pendingNameParts = <String>[];
+
+    void clearPending() => pendingNameParts.clear();
+
+    void addItem({
+      required String name,
+      required double price,
+      int? quantity,
+      String? unit,
+    }) {
+      final cleanName = _cleanProductName(name);
+      if (!_isLikelyProductFragment(cleanName)) return;
+      final match = ProductMatcher.inferCategory(cleanName);
+      final extracted = ProductMatcher.extractQuantity(cleanName);
+      items.add(
+        ReceiptItem(
+          name: cleanName,
+          price: price,
+          category: match.category,
+          confidence: match.confidence,
+          quantity: quantity ?? extracted.$1,
+          unit: unit ?? extracted.$2,
+        ),
+      );
+    }
+
+    for (final rawLine in rawLines) {
+      final line = _normalizeReceiptLine(rawLine);
+      if (line.isEmpty) continue;
+
+      final parsed = ProductMatcher.parseReceiptLine(line);
+      if (parsed != null && parsed.price != null) {
+        final name = [...pendingNameParts, parsed.productName].join(' ');
+        addItem(
+          name: name,
+          price: parsed.price!,
+          quantity: parsed.quantity,
+          unit: parsed.unit,
+        );
+        clearPending();
+        continue;
+      }
+
+      final calculation = _parseCalculationLine(line);
+      if (calculation != null) {
+        if (pendingNameParts.isNotEmpty) {
+          final pendingName = pendingNameParts.join(' ');
+          final extracted = ProductMatcher.extractQuantity(pendingName);
+          addItem(
+            name: pendingName,
+            price: calculation.total,
+            quantity: calculation.quantity ?? extracted.$1,
+            unit: calculation.unit ?? extracted.$2,
+          );
+        }
+        clearPending();
+        continue;
+      }
+
+      final standalonePrice = _parseStandalonePrice(line);
+      if (standalonePrice != null) {
+        if (pendingNameParts.isNotEmpty) {
+          addItem(
+            name: pendingNameParts.join(' '),
+            price: standalonePrice,
+          );
+        }
+        clearPending();
+        continue;
+      }
+
+      if (ProductMatcher.isReceiptMetadata(line)) {
+        clearPending();
+        continue;
+      }
+
+      if (_isMeasureContinuation(line) && pendingNameParts.isNotEmpty) {
+        pendingNameParts.add(line);
+        continue;
+      }
+
+      if (_isLikelyProductFragment(line)) {
+        // Чековые принтеры обычно переносят название не более чем на три
+        // строки. Ограничение не дает заголовку магазина прилипнуть к товару.
+        if (pendingNameParts.length == 3) pendingNameParts.removeAt(0);
+        pendingNameParts.add(line);
+      } else {
+        clearPending();
+      }
+    }
+
     return items;
   }
 
@@ -211,66 +306,109 @@ class OcrService {
     return null;
   }
 
-  ReceiptItem? _parseLine(String rawLine) {
-    final line = rawLine.trim();
-    if (line.length < 3) return null;
-    if (_noiseWords.any((w) => line.toUpperCase().contains(w))) return null;
+  static String _normalizeReceiptLine(String line) => line
+      .replaceAll(RegExp(r'[\u00a0\t|]+'), ' ')
+      .replaceAll(RegExp(r'\s{2,}'), ' ')
+      .trim();
 
-    final parsed = ProductMatcher.parseReceiptLine(line);
-    final name = (parsed?.productName ?? line).trim();
+  static String _cleanProductName(String value) => value
+      .replaceFirst(RegExp(r'^\s*\d{1,3}\s*[.)]\s*'), '')
+      .replaceFirst(
+        RegExp(r'^(?:товар|позиция)\s*\d*\s*[:.)-]?\s*', caseSensitive: false),
+        '',
+      )
+      .replaceAll(RegExp(r'\s+\d{8,14}\s*$'), '')
+      .replaceAll(
+          RegExp(r'\s+[\[({]?[мmппт][\])}]?\s*$', caseSensitive: false), '')
+      .replaceAll(RegExp(r'\s{2,}'), ' ')
+      .replaceAll(RegExp(r'^[\s,;:.\-]+|[\s,;:.\-]+$'), '')
+      .trim();
 
-    // Отбрасываем строки без букв (чистые числа, коды).
-    if (!RegExp(r'[A-Za-zА-Яа-я]{3,}').hasMatch(name)) return null;
+  static bool _isLikelyProductFragment(String value) {
+    final line = _cleanProductName(value);
+    if (line.length < 2 || line.length > 110) return false;
+    if (ProductMatcher.isReceiptMetadata(line)) return false;
+    if (!RegExp(r'[A-Za-zА-Яа-яЁё]{2,}').hasMatch(line)) return false;
+    if (RegExp(r'^[A-ZА-ЯЁ]{1,3}\s*[:№#]').hasMatch(line)) return false;
+    if (RegExp(r'^\d{5,}\s+[A-Za-zА-Яа-яЁё]').hasMatch(line)) return false;
+    if (line.split(RegExp(r'\s+')).length > 14) return false;
+    return true;
+  }
 
-    final cleanName = name
-        .replaceAll(RegExp(r'^\d+\s*[xх×]\s*'), '')
-        .replaceAll(RegExp(r'\s{2,}'), ' ')
-        .trim();
-    if (cleanName.length < 3) return null;
+  static bool _isMeasureContinuation(String value) => RegExp(
+        r'^\d+(?:[.,]\d+)?\s*(?:г|гр|кг|мл|л|шт|штук[а-яё]*|'
+        r'упак(?:овк[а-яё]*)?)\.?$',
+        caseSensitive: false,
+      ).hasMatch(value);
 
-    final match = ProductMatcher.inferCategory(cleanName);
-    final (qty, unit) = ProductMatcher.extractQuantity(cleanName);
+  static _ReceiptCalculation? _parseCalculationLine(String value) {
+    final match = RegExp(
+      r'^\s*(\d+(?:[.,]\d{1,3})?)\s*'
+      r'(шт(?:ук[а-яё]*)?|кг|г|л|мл)?\s*[xх×*]\s*'
+      r'(\d+(?:[.,]\d{1,2})?)'
+      r'(?:(?:\s*(?:=|:)\s*|\s+)(\d+(?:[.,]\d{1,2})?))?'
+      r'\s*(?:₽|руб(?:ль|ля|лей|\.)?)?\s*$',
+      caseSensitive: false,
+    ).firstMatch(value);
+    if (match == null) return null;
 
-    return ReceiptItem(
-      name: cleanName,
-      price: parsed?.price,
-      category: match.category,
-      confidence: match.confidence,
-      quantity: qty,
+    final rawQuantity = double.tryParse(match.group(1)!.replaceAll(',', '.'));
+    final unitPrice = double.tryParse(match.group(3)!.replaceAll(',', '.'));
+    final printedTotal = double.tryParse(
+      (match.group(4) ?? '').replaceAll(',', '.'),
+    );
+    if (rawQuantity == null ||
+        unitPrice == null ||
+        rawQuantity <= 0 ||
+        unitPrice <= 0) {
+      return null;
+    }
+    final wholeQuantity = rawQuantity == rawQuantity.roundToDouble() &&
+            rawQuantity >= 1 &&
+            rawQuantity <= 999
+        ? rawQuantity.round()
+        : null;
+    final printedUnit = match.group(2)?.toLowerCase();
+    final unit = printedUnit == null
+        ? null
+        : printedUnit.startsWith('шт')
+            ? 'pcs'
+            : printedUnit == 'гр'
+                ? 'g'
+                : printedUnit;
+    return _ReceiptCalculation(
+      total: printedTotal ?? rawQuantity * unitPrice,
+      quantity: wholeQuantity,
       unit: unit,
     );
   }
 
-  Future<void> dispose() => _recognizer.close();
+  static double? _parseStandalonePrice(String value) {
+    final match = RegExp(
+      r'^\s*(?:=|стоимость\s*:?\s*)?'
+      r'(\d{1,7}(?:[.,]\d{2}))\s*(?:₽|руб(?:ль|ля|лей|\.)?)?\s*$|'
+      r'^\s*(?:=|стоимость\s*:?\s*)?'
+      r'(\d{1,7})\s*(?:₽|руб(?:ль|ля|лей|\.)?)\s*$',
+      caseSensitive: false,
+    ).firstMatch(value);
+    final raw = match?.group(1) ?? match?.group(2);
+    final price = double.tryParse((raw ?? '').replaceAll(',', '.'));
+    return price == null || price <= 0 ? null : price;
+  }
 
-  static const _noiseWords = [
-    'ИТОГО',
-    'ИТОГ',
-    'СУММА',
-    'НАЛИЧНЫМИ',
-    'КАРТОЙ',
-    'СДАЧА',
-    'НДС',
-    'ККТ',
-    'ИНН',
-    'ФН',
-    'ФД',
-    'ФП',
-    'КАССИР',
-    'ЧЕК',
-    'СМЕНА',
-    'TOTAL',
-    'SUBTOTAL',
-    'CASH',
-    'CARD',
-    'CHANGE',
-    'TAX',
-    'ТЕЛ',
-    'АДРЕС',
-    'СПАСИБО',
-    'ДОБРО ПОЖАЛОВАТЬ',
-    'СКИДКА',
-  ];
+  Future<void> dispose() => _recognizer.close();
+}
+
+class _ReceiptCalculation {
+  const _ReceiptCalculation({
+    required this.total,
+    this.quantity,
+    this.unit,
+  });
+
+  final double total;
+  final int? quantity;
+  final String? unit;
 }
 
 class ReceiptItem {

@@ -48,6 +48,19 @@ void main() {
       expect(product.effectiveStatus, AppConstants.statusConsumed);
     });
 
+    test('restores a custom after-opening duration for editing', () {
+      final opened = DateTime(2026, 8, 1, 12, 30);
+      final product = productWithExpiry(
+        opened.add(const Duration(days: 10)),
+      ).copyWith(openedDate: opened);
+
+      expect(product.afterOpeningStorageDays, 10);
+      expect(
+        productWithExpiry(DateTime(2026, 8, 20)).afterOpeningStorageDays,
+        isNull,
+      );
+    });
+
     test('Supabase mapping excludes local flags and round-trips', () {
       final source =
           productWithExpiry(DateTime.now().add(const Duration(days: 5)))
