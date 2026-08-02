@@ -61,5 +61,17 @@ void main() {
       expect(command.expiryDate.weekday, DateTime.friday);
       expect(command.hadExplicitDate, isTrue);
     });
+
+    test('parses spoken number words for dates and quantities', () {
+      final today = DateTime.now();
+      final start = DateTime(today.year, today.month, today.day);
+      final command =
+          VoiceParser.parse('Добавь три пачки йогурта на пять дней');
+
+      expect(command.name, '3 пачки йогурта');
+      expect(command.quantity, 3);
+      expect(command.expiryDate, start.add(const Duration(days: 5)));
+      expect(command.hadExplicitDate, isTrue);
+    });
   });
 }

@@ -22,4 +22,5 @@ class AppConstants {
   static const String statusConsumed = 'consumed';
   static const String statusWasted = 'wasted';
   static const String receiptsBucket = 'receipts';
+  static const String donationUrl = 'https://www.donationalerts.com/r/whym1ss';
 }

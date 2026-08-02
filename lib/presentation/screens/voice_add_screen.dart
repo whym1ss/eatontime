@@ -21,11 +21,13 @@ class VoiceAddScreen extends ConsumerStatefulWidget {
 
 class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
   final SpeechToText _speech = SpeechToText();
+  final TextEditingController _transcriptController = TextEditingController();
 
   bool _available = false;
   bool _listening = false;
   bool _saving = false;
   String _transcript = '';
+  String? _localeId;
   String? _error;
   VoiceCommand? _command;
 
@@ -47,13 +49,33 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
         },
         onStatus: (status) {
           if (status == 'done' || status == 'notListening') {
-            if (mounted) setState(() => _listening = false);
+            if (!mounted) return;
+            setState(() {
+              _listening = false;
+              _parseTranscript();
+            });
           }
         },
       );
       if (!mounted) return;
+      String? localeId;
+      if (available) {
+        final locales = await _speech.locales();
+        for (final locale in locales) {
+          final normalized = locale.localeId.toLowerCase().replaceAll('-', '_');
+          if (normalized == 'ru_ru') {
+            localeId = locale.localeId;
+            break;
+          }
+          if (localeId == null && normalized.startsWith('ru')) {
+            localeId = locale.localeId;
+          }
+        }
+      }
+      if (!mounted) return;
       setState(() {
         _available = available;
+        _localeId = localeId;
         if (!available) _error = 'Распознавание речи недоступно';
       });
       if (available) _startListening();
@@ -68,22 +90,31 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
       _listening = true;
       _error = null;
       _transcript = '';
+      _transcriptController.clear();
       _command = null;
     });
 
     await _speech.listen(
       listenOptions: SpeechListenOptions(
-        localeId: 'ru_RU',
         partialResults: true,
         listenMode: ListenMode.dictation,
         cancelOnError: true,
+        onDevice: false,
+        pauseFor: const Duration(seconds: 4),
+        listenFor: const Duration(seconds: 30),
+        autoPunctuation: true,
+        localeId: _localeId,
       ),
       onResult: (result) {
         if (!mounted) return;
         setState(() {
           _transcript = result.recognizedWords;
+          _transcriptController.value = TextEditingValue(
+            text: _transcript,
+            selection: TextSelection.collapsed(offset: _transcript.length),
+          );
           if (result.finalResult && _transcript.trim().isNotEmpty) {
-            _command = VoiceParser.parse(_transcript);
+            _parseTranscript();
             _listening = false;
           }
         });
@@ -96,10 +127,14 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
     if (!mounted) return;
     setState(() {
       _listening = false;
-      if (_transcript.trim().isNotEmpty) {
-        _command = VoiceParser.parse(_transcript);
-      }
+      _parseTranscript();
     });
+  }
+
+  void _parseTranscript() {
+    final text = _transcriptController.text.trim();
+    _transcript = text;
+    _command = text.isEmpty ? null : VoiceParser.parse(text);
   }
 
   Future<void> _save() async {
@@ -137,6 +172,7 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
   @override
   void dispose() {
     _speech.stop();
+    _transcriptController.dispose();
     super.dispose();
   }
 
@@ -193,11 +229,20 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
               ),
             ),
             const SizedBox(height: 28),
-            if (_transcript.isNotEmpty)
-              Text(
-                '«$_transcript»',
+            if (_transcript.isNotEmpty || !_listening)
+              TextField(
+                controller: _transcriptController,
+                enabled: !_listening,
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyLarge,
+                minLines: 1,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Что услышало приложение',
+                  hintText: 'Можно исправить текст вручную',
+                  prefixIcon: Icon(Icons.edit_outlined),
+                ),
+                onChanged: (_) => setState(_parseTranscript),
+                onSubmitted: (_) => setState(_parseTranscript),
               ),
             if (_error != null) ...[
               const SizedBox(height: 16),

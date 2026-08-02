@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../../data/models/user_profile.dart';
@@ -194,6 +195,13 @@ class SettingsScreen extends ConsumerWidget {
             },
           ),
           const _Section(title: 'О приложении'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _SupportCard(
+              onTap: () => _openDonationPage(context),
+            ),
+          ),
+          const SizedBox(height: 8),
           ListTile(
             leading: const Icon(Icons.storage_outlined),
             title: const Text('Источники карточек товаров'),
@@ -231,6 +239,21 @@ class SettingsScreen extends ConsumerWidget {
           'Supabase не настроен — данные хранятся локально',
         SyncResult.alreadyRunning => 'Синхронизация уже выполняется',
       };
+
+  Future<void> _openDonationPage(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final opened = await launchUrl(
+      Uri.parse(AppConstants.donationUrl),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Не удалось открыть страницу поддержки'),
+        ),
+      );
+    }
+  }
 
   void _showPremiumSheet(BuildContext context, WidgetRef ref) {
     showModalBottomSheet<void>(
@@ -278,6 +301,81 @@ class SettingsScreen extends ConsumerWidget {
               child: const Text('Оформить'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SupportCard extends StatelessWidget {
+  const _SupportCard({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Semantics(
+      button: true,
+      label: 'Поддержать автора через DonationAlerts',
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: Ink(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(20),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  scheme.primaryContainer,
+                  scheme.secondaryContainer,
+                ],
+              ),
+              border: Border.all(
+                color: scheme.primary.withValues(alpha: 0.18),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 52,
+                  height: 52,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: scheme.surface.withValues(alpha: 0.82),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Text('😺', style: TextStyle(fontSize: 28)),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Поддержать автора',
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Поддержи пж, для тебя стараюсь',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.open_in_new_rounded,
+                  color: scheme.primary,
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

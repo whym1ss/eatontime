@@ -97,6 +97,8 @@ class ProductMatcher {
       RegExp(r'(\d+)\s*кг', caseSensitive: false): 'kg',
       RegExp(r'(\d+)\s*г', caseSensitive: false): 'g',
       RegExp(r'(\d+)\s*шт', caseSensitive: false): 'pcs',
+      RegExp(r'(\d+)\s*(?:пачк|упаковк|бутылк)[а-яё]*', caseSensitive: false):
+          'pcs',
     };
 
     for (final entry in patterns.entries) {

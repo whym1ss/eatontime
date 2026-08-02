@@ -130,31 +130,41 @@ class ProductResolutionService {
 
   ParsedScanCode parseCode(String raw) {
     final value = raw.trim();
-    final fiscal = RegExp(r'(?:^|[?&])t=\d{8}T\d{4}', caseSensitive: false)
-            .hasMatch(value) &&
-        RegExp(r'(?:^|[?&])fn=\d+', caseSensitive: false).hasMatch(value);
-    if (fiscal) return ParsedScanCode(raw: value, isFiscalReceipt: true);
+    if (parseFiscalReceiptQr(value) != null) {
+      return ParsedScanCode(raw: value, isFiscalReceipt: true);
+    }
 
     String? gtin;
     DateTime? expiry;
     String? batch;
     String? serial;
-    final digitsOnly = value.replaceAll(RegExp(r'\D'), '');
     if (RegExp(r'^\d{8,14}$').hasMatch(value)) gtin = normalizeGtin(value);
 
-    final aiGtin = RegExp(r'(?:\(01\)|^01)(\d{14})').firstMatch(value);
-    if (aiGtin != null) gtin = aiGtin.group(1);
-    final aiExpiry = RegExp(r'(?:\(17\)|17)(\d{6})').firstMatch(value);
-    if (aiExpiry != null) expiry = _parseGs1Date(aiExpiry.group(1)!);
+    final digitalLink = _parseGs1DigitalLink(value);
+    gtin ??= digitalLink.gtin;
+    expiry ??= digitalLink.expiry;
+    batch ??= digitalLink.batch;
+    serial ??= digitalLink.serial;
+
+    final aiGtin = RegExp(r'\(01\)(\d{14})').firstMatch(value);
+    if (aiGtin != null) gtin ??= aiGtin.group(1);
+    final aiExpiry = RegExp(r'\(17\)(\d{6})').firstMatch(value);
+    final aiBestBefore = RegExp(r'\(15\)(\d{6})').firstMatch(value);
+    if (aiExpiry != null) {
+      expiry = _parseGs1Date(aiExpiry.group(1)!);
+    } else if (aiBestBefore != null) {
+      expiry ??= _parseGs1Date(aiBestBefore.group(1)!);
+    }
     final aiBatch = RegExp(r'\(10\)([^()\u001d]+)').firstMatch(value);
     final aiSerial = RegExp(r'\(21\)([^()\u001d]+)').firstMatch(value);
-    batch = aiBatch?.group(1);
-    serial = aiSerial?.group(1);
+    batch ??= aiBatch?.group(1);
+    serial ??= aiSerial?.group(1);
 
-    // Часть сканеров удаляет скобки AI, но оставляет разделитель GS.
-    if (gtin == null && digitsOnly.length >= 16 && value.startsWith('01')) {
-      gtin = normalizeGtin(value.substring(2, 16));
-    }
+    final compact = _parseCompactGs1(value);
+    gtin ??= compact.gtin;
+    expiry ??= compact.expiry;
+    batch ??= compact.batch;
+    serial ??= compact.serial;
     return ParsedScanCode(
       raw: value,
       gtin: gtin,
@@ -166,6 +176,129 @@ class ProductResolutionService {
 
   String normalizeGtin(String value) {
     return value.replaceAll(RegExp(r'\D'), '');
+  }
+
+  FiscalReceiptData? parseFiscalReceiptQr(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty) return null;
+    final params = <String, String>{};
+    final uri = Uri.tryParse(value);
+    if (uri != null) params.addAll(uri.queryParameters);
+    final query = value.contains('?') ? value.split('?').last : value;
+    try {
+      params.addAll(Uri.splitQueryString(query));
+    } catch (_) {
+      // Необычная кодировка будет проверена регулярными выражениями ниже.
+    }
+    final normalized = <String, String>{
+      for (final entry in params.entries) entry.key.toLowerCase(): entry.value,
+    };
+    final timestamp = normalized['t'];
+    final fiscalDrive = normalized['fn'];
+    if (timestamp == null || fiscalDrive == null) return null;
+    final dateMatch =
+        RegExp(r'^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})$', caseSensitive: false)
+            .firstMatch(timestamp);
+    DateTime? dateTime;
+    if (dateMatch != null) {
+      final values = [
+        for (var i = 1; i <= 5; i++) int.tryParse(dateMatch.group(i)!),
+      ];
+      if (values.every((value) => value != null)) {
+        final candidate = DateTime(
+          values[0]!,
+          values[1]!,
+          values[2]!,
+          values[3]!,
+          values[4]!,
+        );
+        if (candidate.year == values[0] &&
+            candidate.month == values[1] &&
+            candidate.day == values[2]) {
+          dateTime = candidate;
+        }
+      }
+    }
+    return FiscalReceiptData(
+      raw: value,
+      dateTime: dateTime,
+      total: double.tryParse((normalized['s'] ?? '').replaceAll(',', '.')),
+      fiscalDrive: fiscalDrive,
+      fiscalDocument: normalized['i'],
+      fiscalSign: normalized['fp'],
+      operationType: int.tryParse(normalized['n'] ?? ''),
+    );
+  }
+
+  ({String? gtin, DateTime? expiry, String? batch, String? serial})
+      _parseGs1DigitalLink(String value) {
+    final uri = Uri.tryParse(value);
+    if (uri == null || !uri.hasScheme) {
+      return (gtin: null, expiry: null, batch: null, serial: null);
+    }
+    final fields = <String, String>{};
+    final segments = uri.pathSegments.map(Uri.decodeComponent).toList();
+    for (var index = 0; index + 1 < segments.length; index += 2) {
+      final ai = segments[index];
+      if (!RegExp(r'^\d{2,4}$').hasMatch(ai)) continue;
+      fields[ai] = segments[index + 1];
+    }
+    final expiryRaw = fields['17'] ?? fields['15'];
+    return (
+      gtin: fields['01'] == null ? null : normalizeGtin(fields['01']!),
+      expiry: expiryRaw == null ? null : _parseGs1Date(expiryRaw),
+      batch: fields['10'],
+      serial: fields['21'],
+    );
+  }
+
+  ({String? gtin, DateTime? expiry, String? batch, String? serial})
+      _parseCompactGs1(String value) {
+    var payload = value
+        .replaceFirst(RegExp(r'^\][A-Za-z]\d'), '')
+        .replaceFirst(RegExp(r'^\u001d+'), '');
+    String? gtin;
+    DateTime? expiry;
+    String? batch;
+    String? serial;
+    var cursor = 0;
+    while (cursor < payload.length) {
+      if (payload.codeUnitAt(cursor) == 29) {
+        cursor++;
+        continue;
+      }
+      if (cursor + 2 > payload.length) break;
+      final ai = payload.substring(cursor, cursor + 2);
+      if (ai == '01') {
+        if (cursor + 16 > payload.length) break;
+        final rawGtin = payload.substring(cursor + 2, cursor + 16);
+        if (!RegExp(r'^\d{14}$').hasMatch(rawGtin)) break;
+        gtin = normalizeGtin(rawGtin);
+        cursor += 16;
+        continue;
+      }
+      if (const {'11', '13', '15', '16', '17'}.contains(ai)) {
+        if (cursor + 8 > payload.length) break;
+        final rawDate = payload.substring(cursor + 2, cursor + 8);
+        if (!RegExp(r'^\d{6}$').hasMatch(rawDate)) break;
+        final parsed = _parseGs1Date(rawDate);
+        if (ai == '17' || (ai == '15' && expiry == null)) expiry = parsed;
+        cursor += 8;
+        continue;
+      }
+      if (ai == '10' || ai == '21') {
+        final start = cursor + 2;
+        final separator = payload.indexOf('\u001d', start);
+        final end = separator < 0 ? payload.length : separator;
+        final field = payload.substring(start, end);
+        if (ai == '10') batch = field;
+        if (ai == '21') serial = field;
+        cursor = separator < 0 ? payload.length : separator + 1;
+        continue;
+      }
+      break;
+    }
+    return (gtin: gtin, expiry: expiry, batch: batch, serial: serial);
   }
 
   Future<List<Map<String, dynamic>>> resolveFiscalReceipt(String qr) async {
@@ -257,7 +390,7 @@ class ProductResolutionService {
       final request = await client.getUrl(uri);
       request.headers.set(
         HttpHeaders.userAgentHeader,
-        'EatOnTime/1.0 (Android; contact: support@eatontime.app)',
+        'EatOnTime/1.0 (https://github.com/whym1ss/eatontime)',
       );
       final response =
           await request.close().timeout(const Duration(seconds: 6));

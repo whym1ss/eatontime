@@ -4,6 +4,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/product_matcher.dart';
+import '../../data/models/product_resolution.dart';
 import '../../data/models/user_profile.dart';
 import '../../data/repositories/product_repository.dart';
 import '../../providers/core_providers.dart';
@@ -31,6 +32,7 @@ class _FiscalReceiptScanScreenState
   bool _loading = false;
   bool _handled = false;
   String? _qr;
+  FiscalReceiptData? _receipt;
   List<_FiscalItem>? _items;
   String? _message;
 
@@ -60,14 +62,14 @@ class _FiscalReceiptScanScreenState
 
   Future<void> _resolve(String raw) async {
     if (!mounted) return;
+    final resolver = ref.read(productResolutionServiceProvider);
     setState(() {
       _loading = true;
       _qr = raw;
+      _receipt = resolver.parseFiscalReceiptQr(raw);
       _message = null;
     });
-    final rows = await ref
-        .read(productResolutionServiceProvider)
-        .resolveFiscalReceipt(raw);
+    final rows = await resolver.resolveFiscalReceipt(raw);
     if (!mounted) return;
     if (rows.isEmpty) {
       setState(() {
@@ -192,8 +194,12 @@ class _FiscalReceiptScanScreenState
                   textAlign: TextAlign.center),
               if (_qr != null) ...[
                 const SizedBox(height: 8),
-                Text('QR сохранён в текущем сеансе',
+                Text('QR успешно распознан',
                     style: Theme.of(context).textTheme.bodySmall),
+              ],
+              if (_receipt != null) ...[
+                const SizedBox(height: 14),
+                _ReceiptDetails(receipt: _receipt!),
               ],
               const SizedBox(height: 18),
               FilledButton.icon(
@@ -223,6 +229,40 @@ class _FiscalReceiptScanScreenState
           ].join(' · ')),
         );
       },
+    );
+  }
+}
+
+class _ReceiptDetails extends StatelessWidget {
+  const _ReceiptDetails({required this.receipt});
+
+  final FiscalReceiptData receipt;
+
+  @override
+  Widget build(BuildContext context) {
+    final date = receipt.dateTime;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Данные из QR',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (date != null)
+              Text(
+                'Дата: ${MaterialLocalizations.of(context).formatCompactDate(date)} '
+                '${TimeOfDay.fromDateTime(date).format(context)}',
+              ),
+            if (receipt.total != null)
+              Text('Сумма: ${receipt.total!.toStringAsFixed(2)} ₽'),
+            if (receipt.fiscalDrive != null) Text('ФН: ${receipt.fiscalDrive}'),
+            if (receipt.fiscalDocument != null)
+              Text('ФД: ${receipt.fiscalDocument}'),
+          ],
+        ),
+      ),
     );
   }
 }

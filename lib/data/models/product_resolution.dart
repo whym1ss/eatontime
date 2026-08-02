@@ -54,6 +54,26 @@ class ParsedScanCode {
   final bool isFiscalReceipt;
 }
 
+class FiscalReceiptData {
+  const FiscalReceiptData({
+    required this.raw,
+    this.dateTime,
+    this.total,
+    this.fiscalDrive,
+    this.fiscalDocument,
+    this.fiscalSign,
+    this.operationType,
+  });
+
+  final String raw;
+  final DateTime? dateTime;
+  final double? total;
+  final String? fiscalDrive;
+  final String? fiscalDocument;
+  final String? fiscalSign;
+  final int? operationType;
+}
+
 class ResolvedProductDraft {
   const ResolvedProductDraft({
     required this.code,

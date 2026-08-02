@@ -4,7 +4,7 @@ import '../utils/product_matcher.dart';
 /// «молоко до пятницы», «добавь курицу на 3 дня», «яйца в морозилку».
 class VoiceParser {
   static VoiceCommand parse(String phrase) {
-    var text = phrase.toLowerCase().trim();
+    var text = _normalizeSpokenNumbers(phrase.toLowerCase().trim());
 
     // Убираем командные слова.
     for (final prefix in _commandWords) {
@@ -137,6 +137,23 @@ class VoiceParser {
   static String _capitalize(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
 
+  static String _normalizeSpokenNumbers(String text) {
+    final numberWords = _spokenNumbers.keys.toList()
+      ..sort((a, b) => b.length.compareTo(a.length));
+    final followedByUnit = RegExp(
+      '(?<![a-zа-яё])(${numberWords.map(RegExp.escape).join('|')})'
+      r'(?=\s*(?:д(?:ень|ня|ней)|недел[а-яё]*|месяц[а-яё]*|'
+      r'шт(?:ук[а-яё]*)?|пачк[а-яё]*|упаковк[а-яё]*|бутылк[а-яё]*|'
+      r'килограмм[а-яё]*|кг|грамм[а-яё]*|г|'
+      r'литр[а-яё]*|л|миллилитр[а-яё]*|мл)(?![a-zа-яё]))',
+      caseSensitive: false,
+    );
+    return text.replaceAllMapped(
+      followedByUnit,
+      (match) => _spokenNumbers[match.group(1)!.toLowerCase()]!.toString(),
+    );
+  }
+
   /// Dart treats `\b` and `\w` as ASCII-only, so explicit boundaries are
   /// required for Russian words.
   static RegExp _wholeWord(String expression) => RegExp(
@@ -157,6 +174,44 @@ class VoiceParser {
     'внеси',
     'сохрани',
   ];
+
+  static const Map<String, int> _spokenNumbers = {
+    'двадцать девять': 29,
+    'двадцать восемь': 28,
+    'двадцать семь': 27,
+    'двадцать шесть': 26,
+    'двадцать пять': 25,
+    'двадцать четыре': 24,
+    'двадцать три': 23,
+    'двадцать две': 22,
+    'двадцать два': 22,
+    'двадцать один': 21,
+    'тридцать': 30,
+    'двадцать': 20,
+    'девятнадцать': 19,
+    'восемнадцать': 18,
+    'семнадцать': 17,
+    'шестнадцать': 16,
+    'пятнадцать': 15,
+    'четырнадцать': 14,
+    'тринадцать': 13,
+    'двенадцать': 12,
+    'одиннадцать': 11,
+    'десять': 10,
+    'девять': 9,
+    'восемь': 8,
+    'семь': 7,
+    'шесть': 6,
+    'пять': 5,
+    'четыре': 4,
+    'три': 3,
+    'две': 2,
+    'два': 2,
+    'одну': 1,
+    'одно': 1,
+    'одна': 1,
+    'один': 1,
+  };
 
   static final _stripPatterns = [
     _wholeWord(
