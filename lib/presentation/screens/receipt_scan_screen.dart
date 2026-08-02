@@ -348,6 +348,8 @@ class _ReceiptScanScreenState extends ConsumerState<ReceiptScanScreen> {
             subtitle: Text(
               [
                 if (item.price != null) '${item.price!.toStringAsFixed(2)} ₽',
+                if (item.quantity > 1 || item.unit != 'pcs')
+                  '${item.quantity} ${ProductLabels.unit(item.unit)}',
                 ProductLabels.category(item.category),
                 '${ProductMatcher.estimateShelfLife(item.category, _zoneId)} дн.',
               ].join(' · '),

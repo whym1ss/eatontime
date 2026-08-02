@@ -24,6 +24,10 @@ class SettingsRepository {
     }
     try {
       final decoded = jsonDecode(raw) as Map<String, dynamic>;
+      if (!decoded.containsKey('notifyHoursBefore')) {
+        final legacyDays = (decoded['notifyDaysBefore'] as num?)?.toInt();
+        if (legacyDays != null) decoded['notifyHoursBefore'] = legacyDays * 24;
+      }
       final profile = UserProfile.fromJson(decoded);
       return profile.id == userId ? profile : profile.copyWith(id: userId);
     } catch (_) {
@@ -35,7 +39,7 @@ class SettingsRepository {
     await _prefs.setString(_profileKey, jsonEncode(profile.toJson()));
     // Плоские ключи — их читает фоновый изолят workmanager.
     await _prefs.setBool('notifications_enabled', profile.notificationsEnabled);
-    await _prefs.setInt('notify_days_before', profile.notifyDaysBefore);
+    await _prefs.setInt('notify_hours_before', profile.notifyHoursBefore);
     await _prefs.setInt('notification_hour', profile.notificationHour);
     await _prefs.setInt('notification_minute', profile.notificationMinute);
     if (!profile.id.startsWith('local-')) {

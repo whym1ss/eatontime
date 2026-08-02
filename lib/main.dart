@@ -70,13 +70,16 @@ Future<void> _initializeOptionalServices(SharedPreferences prefs) async {
   try {
     await NotificationService.instance.init();
     await BackgroundService.init();
-    if (prefs.getBool('notifications_enabled') ?? true) {
+    if (prefs.getBool('notifications_enabled') ?? false) {
       await BackgroundService.schedule(
         hour: prefs.getInt('notification_hour') ?? 9,
         minute: prefs.getInt('notification_minute') ?? 0,
       );
     }
-  } catch (_) {
+  } catch (error) {
+    // Оставляем причину в системном журнале: это помогает диагностировать
+    // ограничения конкретной прошивки, не мешая запуску приложения.
+    debugPrint('Optional Android services are unavailable: $error');
     // Фоновые задачи недоступны (например, в тестах/desktop) — не критично.
   }
 }

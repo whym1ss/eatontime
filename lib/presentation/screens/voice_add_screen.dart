@@ -5,6 +5,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/themes/app_theme.dart';
 import '../../core/utils/date_utils.dart';
+import '../../core/utils/product_labels.dart';
 import '../../core/utils/voice_parser.dart';
 import '../../data/models/user_profile.dart';
 import '../../providers/core_providers.dart';
@@ -143,13 +144,24 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
 
     setState(() => _saving = true);
     try {
+      final openedAt = command.openingDays == null ? null : DateTime.now();
+      final expiryDate = openedAt == null
+          ? command.expiryDate
+          : _earliest(
+              command.expiryDate,
+              openedAt.add(Duration(days: command.openingDays!)),
+            );
       await ref.read(productRepositoryProvider).add(
             name: command.name,
-            category: command.category,
+            brand: command.brand,
+            category: command.customCategory ?? command.category,
             zoneId: command.zoneId,
-            expiryDate: command.expiryDate,
+            expiryDate: expiryDate,
+            openedDate: openedAt,
             quantity: command.quantity,
             unit: command.unit,
+            price: command.price,
+            note: command.note,
             addMethod: AppConstants.addVoice,
             maxActiveProducts: ref.read(userProfileProvider).productLimit,
           );
@@ -169,6 +181,9 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
     );
   }
 
+  DateTime _earliest(DateTime first, DateTime second) =>
+      first.isBefore(second) ? first : second;
+
   @override
   void dispose() {
     _speech.stop();
@@ -182,7 +197,7 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Голосовой ввод')),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -199,7 +214,8 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Например: «молоко до пятницы» или «курица на 3 дня в морозилку»',
+              'Например: «молоко бренд Простоквашино цена 120 рублей '
+              'до пятницы»',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall,
             ),
@@ -252,7 +268,7 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
             ],
-            const Spacer(),
+            const SizedBox(height: 24),
             if (command != null && command.isValid) ...[
               Card(
                 margin: EdgeInsets.zero,
@@ -281,6 +297,47 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
                           Text(AppDateUtils.fullDate(command.expiryDate)),
                         ],
                       ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: [
+                          Chip(
+                            visualDensity: VisualDensity.compact,
+                            label: Text(
+                              ProductLabels.category(
+                                command.customCategory ?? command.category,
+                              ),
+                            ),
+                          ),
+                          if (command.brand != null)
+                            Chip(
+                              visualDensity: VisualDensity.compact,
+                              label: Text('Бренд: ${command.brand}'),
+                            ),
+                          if (command.price != null)
+                            Chip(
+                              visualDensity: VisualDensity.compact,
+                              label: Text(
+                                '${command.price!.toStringAsFixed(2)} ₽',
+                              ),
+                            ),
+                          if (command.openingDays != null)
+                            Chip(
+                              visualDensity: VisualDensity.compact,
+                              label: Text(
+                                'После вскрытия: ${command.openingDays} дн.',
+                              ),
+                            ),
+                        ],
+                      ),
+                      if (command.note != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          'Заметка: ${command.note}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
                       if (!command.hadExplicitDate) ...[
                         const SizedBox(height: 8),
                         Text(
@@ -304,10 +361,16 @@ class _VoiceAddScreenState extends ConsumerState<VoiceAddScreen> {
                                   builder: (_) => AddProductScreen(
                                     initialName: command.name,
                                     initialExpiry: command.expiryDate,
-                                    initialCategory: command.category,
+                                    initialBrand: command.brand,
+                                    initialCategory: command.customCategory ??
+                                        command.category,
                                     initialZoneId: command.zoneId,
                                     initialQuantity: command.quantity,
                                     initialUnit: command.unit,
+                                    initialPrice: command.price,
+                                    initialNote: command.note,
+                                    initialOpeningDays: command.openingDays,
+                                    initialOpened: command.openingDays != null,
                                     addMethod: AppConstants.addVoice,
                                   ),
                                 ),

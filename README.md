@@ -10,7 +10,7 @@
 
   [![Flutter](https://img.shields.io/badge/Flutter-3.44-02569B?logo=flutter&logoColor=white)](https://flutter.dev/)
   [![Dart](https://img.shields.io/badge/Dart-3.12-0175C2?logo=dart&logoColor=white)](https://dart.dev/)
-  [![Android](https://img.shields.io/badge/Android-API_23+-3DDC84?logo=android&logoColor=white)](https://developer.android.com/)
+  [![Android](https://img.shields.io/badge/Android-API_24+-3DDC84?logo=android&logoColor=white)](https://developer.android.com/)
   [![CI](https://github.com/whym1ss/eatontime/actions/workflows/flutter.yml/badge.svg)](https://github.com/whym1ss/eatontime/actions/workflows/flutter.yml)
   [![Release](https://img.shields.io/github/v/release/whym1ss/eatontime?display_name=tag&sort=semver)](https://github.com/whym1ss/eatontime/releases/latest)
   [![Поддержать автора](https://img.shields.io/badge/поддержать_автора-DonationAlerts-FF424D)](https://www.donationalerts.com/r/whym1ss)
@@ -47,12 +47,12 @@
 | 📦 Учёт продуктов | Название, бренд, категория, количество, цена, заметка и зона хранения |
 | ⏳ Контроль свежести | Статусы «свежий», «скоро испортится», «съесть срочно» и «просрочен» |
 | 🔎 Умный сканер | EAN-8/13, UPC, Code 128, QR и Data Matrix |
-| 🧠 Автозаполнение | Локальная история → каталог Eat on Time → серверный шлюз → Open Food Facts → эвристики |
+| 🧠 Автозаполнение | Локальная история → каталог Eat on Time → серверный шлюз → Open Food Facts v3 → эвристики |
 | 📅 OCR упаковки | Читает название, объём, условия хранения, срок и фразу «после вскрытия» по трём кадрам |
 | 🛍 Разобрать пакет | Непрерывно сканирует несколько покупок без переходов между экранами |
-| 🧾 Работа с чеками | OCR фотографии чека и интерфейс официального импорта по фискальному QR |
-| 🎙 Голосовой ввод | Понимает команды вроде «добавь молоко в холодильник на пять дней» |
-| 🔔 Напоминания | Ежедневно предупреждает о продуктах с близким сроком |
+| 🧾 Работа с чеками | Выделяет позиции с ценами, объединяет переносы и отбрасывает реквизиты, оплату, НДС и итоги |
+| 🎙 Голосовой ввод | Отделяет название от бренда, цены, категории, заметки и срока после вскрытия |
+| 🔔 Напоминания | Произвольный горизонт в часах/днях и отдельные этапы «скоро», «сегодня», «просрочено» |
 | 💡 Умные советы | Предлагает место хранения, заморозку и идеи использования продукта |
 | 📊 Статистика | Съеденное, выброшенное, спасённые деньги и динамика по категориям |
 | ☁️ Синхронизация | Опциональный Supabase, а без него — полностью локальная работа |
@@ -68,7 +68,7 @@ ProductResolutionService
   1. локальная история пользователя
   2. проверенный каталог Eat on Time
   3. официальный серверный шлюз
-  4. Open Food Facts
+  4. Open Food Facts v3 (с fallback на v2)
   5. локальные эвристики
           ↓
 Предпросмотр с источником и уверенностью → подтверждение → Isar
@@ -81,6 +81,10 @@ ProductResolutionService
 
 Для Data Matrix локально разбираются известные GS1-поля: GTIN, дата, партия и
 серийная часть — если они действительно присутствуют в коде.
+
+Фискальный QR содержит дату, сумму и реквизиты чека, но не список покупок.
+Поэтому без настроенного официального серверного провайдера Eat on Time
+показывает доступные реквизиты и предлагает распознать товары с фотографии.
 
 ### Источники данных и безопасность
 
@@ -112,7 +116,7 @@ ProductResolutionService
 
 - Flutter stable;
 - Android Studio и Android SDK;
-- устройство или эмулятор с Android API 23+.
+- устройство или эмулятор с Android API 24+.
 
 ### Запуск без backend
 

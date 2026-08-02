@@ -26,8 +26,8 @@ class UserProfileNotifier extends StateNotifier<UserProfile> {
         ),
       );
 
-  Future<void> setNotifyDaysBefore(int days) =>
-      _persist(state.copyWith(notifyDaysBefore: days));
+  Future<void> setNotifyHoursBefore(int hours) =>
+      _persist(state.copyWith(notifyHoursBefore: hours));
 
   Future<void> setThemeMode(String mode) =>
       _persist(state.copyWith(themeMode: mode));

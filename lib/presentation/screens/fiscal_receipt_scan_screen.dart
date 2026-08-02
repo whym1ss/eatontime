@@ -31,7 +31,6 @@ class _FiscalReceiptScanScreenState
   );
   bool _loading = false;
   bool _handled = false;
-  String? _qr;
   FiscalReceiptData? _receipt;
   List<_FiscalItem>? _items;
   String? _message;
@@ -63,12 +62,21 @@ class _FiscalReceiptScanScreenState
   Future<void> _resolve(String raw) async {
     if (!mounted) return;
     final resolver = ref.read(productResolutionServiceProvider);
+    final receipt = resolver.parseFiscalReceiptQr(raw);
     setState(() {
       _loading = true;
-      _qr = raw;
-      _receipt = resolver.parseFiscalReceiptQr(raw);
+      _receipt = receipt;
       _message = null;
     });
+    if (receipt == null) {
+      setState(() {
+        _loading = false;
+        _items = const [];
+        _message = 'Это не QR кассового чека. Наведите камеру на QR '
+            'с фискальными реквизитами в нижней части чека.';
+      });
+      return;
+    }
     final rows = await resolver.resolveFiscalReceipt(raw);
     if (!mounted) return;
     if (rows.isEmpty) {
@@ -86,6 +94,17 @@ class _FiscalReceiptScanScreenState
         for (final row in rows) _FiscalItem.fromMap(row),
       ];
     });
+  }
+
+  Future<void> _retryQr() async {
+    setState(() {
+      _loading = false;
+      _handled = false;
+      _receipt = null;
+      _items = null;
+      _message = null;
+    });
+    await _controller.start();
   }
 
   Future<void> _save() async {
@@ -188,11 +207,16 @@ class _FiscalReceiptScanScreenState
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.cloud_off_outlined, size: 52),
+              Icon(
+                _receipt == null
+                    ? Icons.qr_code_2_rounded
+                    : Icons.cloud_off_outlined,
+                size: 52,
+              ),
               const SizedBox(height: 14),
               Text(_message ?? 'Позиции не найдены',
                   textAlign: TextAlign.center),
-              if (_qr != null) ...[
+              if (_receipt != null) ...[
                 const SizedBox(height: 8),
                 Text('QR успешно распознан',
                     style: Theme.of(context).textTheme.bodySmall),
@@ -202,9 +226,17 @@ class _FiscalReceiptScanScreenState
                 _ReceiptDetails(receipt: _receipt!),
               ],
               const SizedBox(height: 18),
+              OutlinedButton.icon(
+                onPressed: _retryQr,
+                icon: const Icon(Icons.qr_code_scanner_rounded),
+                label: const Text('Сканировать QR заново'),
+              ),
+              const SizedBox(height: 10),
               FilledButton.icon(
                 onPressed: () => Navigator.of(context).pushReplacement(
-                  MaterialPageRoute(builder: (_) => const ReceiptScanScreen()),
+                  MaterialPageRoute(
+                    builder: (_) => const ReceiptScanScreen(),
+                  ),
                 ),
                 icon: const Icon(Icons.document_scanner_outlined),
                 label: const Text('Сканировать фотографию чека'),

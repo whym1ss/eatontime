@@ -36,6 +36,25 @@ void main() {
       expect(ProductMatcher.parseReceiptLine('ИТОГО'), isNull);
     });
 
+    test('rejects receipt metadata even when it ends with a price', () {
+      expect(ProductMatcher.parseReceiptLine('ИТОГО 144,40'), isNull);
+      expect(ProductMatcher.parseReceiptLine('СКИДКА 5,00'), isNull);
+      expect(ProductMatcher.parseReceiptLine('НДС 20% 24,07'), isNull);
+      expect(ProductMatcher.parseReceiptLine('ОПЛАТА КАРТОЙ 144,40'), isNull);
+      expect(ProductMatcher.parseReceiptLine('ИНН 7701234567'), isNull);
+    });
+
+    test('extracts multiplied receipt quantity and total price', () {
+      final parsed = ProductMatcher.parseReceiptLine(
+        '2. Йогурт натуральный 3 шт x 49,90 = 149,70',
+      );
+
+      expect(parsed?.productName, 'Йогурт натуральный');
+      expect(parsed?.price, closeTo(149.70, 0.001));
+      expect(parsed?.quantity, 3);
+      expect(parsed?.unit, 'pcs');
+    });
+
     test('extracts quantity and normalized unit', () {
       expect(ProductMatcher.extractQuantity('Яйца 10 шт'), (10, 'pcs'));
       expect(ProductMatcher.extractQuantity('Молоко 2 л'), (2, 'l'));

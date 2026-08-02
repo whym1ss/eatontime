@@ -46,6 +46,22 @@ class Product with _$Product {
   bool get isWasted => status == AppConstants.statusWasted;
   bool get isArchived => isConsumed || isWasted;
 
+  /// Восстанавливает фактически применённый срок после вскрытия.
+  ///
+  /// Старые записи хранят дату вскрытия и уже ограниченную дату годности, но
+  /// не отдельное число дней. Округление вверх сохраняет введённое значение,
+  /// даже если между сохранением и чтением есть неполные сутки.
+  int? get afterOpeningStorageDays {
+    final opened = openedDate;
+    if (opened == null) return null;
+    final seconds = expiryDate.difference(opened).inSeconds;
+    if (seconds <= 0) return 1;
+    const secondsPerDay = Duration.secondsPerDay;
+    return ((seconds + secondsPerDay - 1) ~/ secondsPerDay)
+        .clamp(1, 365)
+        .toInt();
+  }
+
   /// Вычисляемый статус свежести (не учитывает съедено/выброшено).
   String get freshnessStatus {
     final d = daysLeft;
