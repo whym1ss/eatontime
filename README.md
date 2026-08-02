@@ -13,6 +13,7 @@
   [![Android](https://img.shields.io/badge/Android-API_23+-3DDC84?logo=android&logoColor=white)](https://developer.android.com/)
   [![CI](https://github.com/whym1ss/eatontime/actions/workflows/flutter.yml/badge.svg)](https://github.com/whym1ss/eatontime/actions/workflows/flutter.yml)
   [![Release](https://img.shields.io/github/v/release/whym1ss/eatontime?display_name=tag&sort=semver)](https://github.com/whym1ss/eatontime/releases/latest)
+  [![Поддержать автора](https://img.shields.io/badge/поддержать_автора-DonationAlerts-FF424D)](https://www.donationalerts.com/r/whym1ss)
   ![Offline first](https://img.shields.io/badge/offline--first-ready-2E7D32)
 
   [Возможности](#-возможности) · [Быстрый старт](#-быстрый-старт) ·
@@ -275,6 +276,12 @@ GitHub Actions выполняет генерацию моделей, стати�
 запустите форматирование, анализатор и тесты.
 
 История пользовательских изменений: [`CHANGELOG.md`](CHANGELOG.md).
+
+## 😺 Поддержать автора
+
+Если Eat on Time оказался полезен, можно
+[поддержать разработку через DonationAlerts](https://www.donationalerts.com/r/whym1ss).
+Поддержи пж, для тебя стараюсь 💚
 
 ---
 
