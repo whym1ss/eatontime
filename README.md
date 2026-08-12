@@ -2,7 +2,7 @@
   <img src="assets/images/app_icon_master.png" alt="Eat on Time" width="180" />
 
   # Eat on Time
-
+ПРОЕКТ ЗАБРОШЕН,ИЗВИНИТЕ! The project has been abandoned—sorry!ПРОЕКТ ЗАБРОШЕН,ИЗВИНИТЕ! The project has been abandoned—sorry!ПРОЕКТ ЗАБРОШЕН,ИЗВИНИТЕ! The project has been abandoned—sorry!ПРОЕКТ ЗАБРОШЕН,ИЗВИНИТЕ!
   **Умный хранитель продуктов, который помогает съесть их вовремя.**
 
   Сканирует упаковку, распознаёт срок годности, напоминает о важных датах
